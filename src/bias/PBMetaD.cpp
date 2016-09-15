@@ -220,6 +220,7 @@ private:
   bool    welltemp_;
   bool    multiple_w;
   unsigned nw_;
+  unsigned mw_;
   vector<double> uppI_;
   vector<double> lowI_;
   vector<bool>  doInt_;
@@ -436,9 +437,8 @@ isFirstStep(true), addZeroHills(false)
         for(unsigned i=0;i<gspacing.size();i++) gspacing[i]=0.1*sigma0_[i];
       } else {
         // with adaptive hills and grid a sigma min must be specified
-        if(sigma0min_.size()==0) error("When using Adaptive Gaussians on a grid SIGMA_MIN must be specified");
+        for(unsigned i=0;i<sigma0min_.size();i++) if(sigma0min_[i]<=0) error("When using Adaptive Gaussians on a grid SIGMA_MIN must be specified");
         log<<"  Binsize not specified, 1/5 of sigma_min will be be used\n";
-        plumed_assert(sigma0_.size()==getNumberOfArguments());
         gspacing.resize(getNumberOfArguments());
         for(unsigned i=0;i<gspacing.size();i++) gspacing[i]=0.2*sigma0min_[i];
       }
@@ -532,15 +532,17 @@ isFirstStep(true), addZeroHills(false)
 
   // initializing and checking grid
   if(grid_){
-    // check for adaptive and sigma_min
-    if(sigma0min_.size()==0&&adaptive_!=FlexibleBin::none) error("When using Adaptive Gaussians on a grid SIGMA_MIN must be specified");
    // check for mesh and sigma size
    for(unsigned i=0;i<getNumberOfArguments();i++) {
      double a,b;
      Tools::convert(gmin[i],a);
      Tools::convert(gmax[i],b);
      double mesh=(b-a)/((double)gbin[i]);
-     if(mesh>0.5*sigma0_[i]) log<<"  WARNING: Using a METAD with a Grid Spacing larger than half of the Gaussians width can produce artifacts\n";
+     if(adaptive_==FlexibleBin::none) {
+       if(mesh>0.5*sigma0_[i]) log<<"  WARNING: Using a METAD with a Grid Spacing larger than half of the Gaussians width can produce artifacts\n";
+     } else {
+       if(mesh>0.5*sigma0min_[i]||sigma0min_[i]<0.) log<<"  WARNING: to use a METAD with a GRID and ADAPTIVE you need to set a Grid Spacing larger than half of the Gaussians \n";
+     }
    }
    std::string funcl=getLabel() + ".bias";
    for(unsigned i=0; i<getNumberOfArguments(); ++i){
@@ -615,8 +617,10 @@ isFirstStep(true), addZeroHills(false)
     if(comm.Get_rank()==0) {
       multi_sim_comm.Barrier();
       nw_ = multi_sim_comm.Get_size();
+      mw_ = multi_sim_comm.Get_rank();
     }
     comm.Bcast(nw_,0);
+    comm.Bcast(mw_,0);
   }
 
   // open hills files for writing
@@ -879,23 +883,29 @@ void PBMetaD::calculate()
   vector<double> bias(getNumberOfArguments());
   vector<double> deriv(getNumberOfArguments());
 
+  double ncv = (double) getNumberOfArguments();
+  double bmin = 1.0e+19;
+  for(unsigned i=0; i<getNumberOfArguments(); ++i){
+   cv[0]    = getArgument(i);
+   der[0]   = 0.0;
+   bias[i]  = getBiasAndDerivatives(i, cv, der);
+   deriv[i] = der[0];
+   if(bias[i] < bmin) bmin = bias[i];
+  }
   double ene = 0.;
   for(unsigned i=0; i<getNumberOfArguments(); ++i){
-    cv[0]    = getArgument(i);
-    der[0]   = 0.0;
-    bias[i]  = getBiasAndDerivatives(i, cv, der);
-    deriv[i] = der[0];
-    ene += exp(-bias[i]/kbt_);
+    ene += exp((-bias[i]+bmin)/kbt_);
   }
-      
+ 
   // set Forces 
   for(unsigned i=0; i<getNumberOfArguments(); ++i){
-    const double f = - exp(-bias[i]/kbt_) / (ene) * deriv[i];
+    const double f = - exp((-bias[i]+bmin)/kbt_) / (ene) * deriv[i];
     setOutputForce(i, f);
   }
 
   // set bias
-  setBias(-kbt_*std::log(ene));
+  ene = -kbt_ * (std::log(ene) - std::log(ncv)) + bmin;
+  setBias(ene);
 }
 
 void PBMetaD::update()
@@ -926,13 +936,18 @@ void PBMetaD::update()
     vector<double> cv_tmp(1);
     vector<double> sigma_tmp(1);
     double norm = 0.0;
+    double bmin = 1.0e+19;
     for(unsigned i=0; i<getNumberOfArguments(); ++i){
       if(adaptive_!=FlexibleBin::none) thissigma[i]=flexbin[i].getInverseMatrix(i)[0];
       else thissigma[i]=sigma0_[i];
       cv[i]     = getArgument(i);
       cv_tmp[0] = getArgument(i);
-      bias[i]   = getBiasAndDerivatives(i, cv_tmp);
-      double h  = exp(-bias[i]/kbt_);
+      bias[i] = getBiasAndDerivatives(i, cv_tmp);
+      if(bias[i] < bmin) bmin = bias[i];
+    }
+    // calculate heights and norm
+    for(unsigned i=0; i<getNumberOfArguments(); ++i){
+      double h  = exp((-bias[i]+bmin)/kbt_);
       norm     += h;
       height[i] = h;
     }
@@ -950,15 +965,22 @@ void PBMetaD::update()
       vector<double> all_sigma(nw_*getNumberOfArguments(), 0.0);
       vector<double> all_height(nw_*getNumberOfArguments(), 0.0);
       if(comm.Get_rank()==0){
-      // Communicate (only root)
-        multi_sim_comm.Allgather(cv, all_cv);
-        multi_sim_comm.Allgather(thissigma,all_sigma);
-        multi_sim_comm.Allgather(height, all_height);
+        // fill in value
+        for(unsigned i=0; i<getNumberOfArguments(); ++i){
+          unsigned j = mw_ * getNumberOfArguments() + i;
+          all_cv[j]     = cv[i];
+          all_sigma[j]  = thissigma[i];
+          all_height[j] = height[i];
+        }
+        // Communicate (only root)
+        multi_sim_comm.Sum(&all_cv[0], all_cv.size());
+        multi_sim_comm.Sum(&all_sigma[0], all_sigma.size());
+        multi_sim_comm.Sum(&all_height[0], all_height.size());
       }
       // Share info with group members
-      comm.Bcast(all_cv,0);
-      comm.Bcast(all_sigma,0);
-      comm.Bcast(all_height,0);
+      comm.Sum(&all_cv[0], all_cv.size());
+      comm.Sum(&all_sigma[0], all_sigma.size());
+      comm.Sum(&all_height[0], all_height.size());
       // now add hills one by one
       for(unsigned j=0; j<nw_; ++j){
         for(unsigned i=0; i<getNumberOfArguments(); ++i){

@@ -22,6 +22,8 @@
 #include "Colvar.h"
 #include "MetaInfBase.h"
 #include "ActionRegister.h"
+#include "core/Atoms.h"
+#include "core/PlumedMain.h"
 
 #include <string>
 
@@ -64,15 +66,18 @@ namespace PLMD {
             parseFlag("NOPBC", nopbc);
             pbc = !nopbc;
 
-            std::string midata, errors;
-            parse("MI", midata);
-            mi.set(midata, errors);
-            if (errors.length() != 0) {
-                error("Problem reading METAINFBASE keyword: " + errors);
-            }
+            vector<double> blah(4, 0);
 
             vector<AtomNumber> atoms;
             parseAtomList("ATOMS", atoms);
+
+            std::string midata, errors;
+            parse("MI", midata);
+            mi.set(midata, errors, blah, getRestart(), plumed.getAtoms().getKBoltzmann(),
+                   plumed.getAtoms().getKbT(), comm, multi_sim_comm);
+            if (errors.length() != 0) {
+                error("Problem reading METAINFBASE keyword: " + errors);
+            }
 
             checkRead();
             addValueWithDerivatives();
@@ -89,9 +94,9 @@ namespace PLMD {
                 positions.push_back(pos.modulo());
             }
 
-            const double average = mi.calculate(positions);
+            const double score = mi.calculate(positions, getStep(), getExchangeStep(), comm, multi_sim_comm);
             setBoxDerivativesNoPbc();
-            setValue(average);
+            setValue(score);
         }
     }
 }

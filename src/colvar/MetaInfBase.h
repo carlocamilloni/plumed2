@@ -22,21 +22,125 @@
 #ifndef __PLUMED_colvar_MetaInfBase_h
 #define __PLUMED_colvar_MetaInfBase_h
 
+#include "core/Atoms.h"
+#include "tools/Random.h"
+#include "tools/File.h"
+
 #include <vector>
 #include <string>
+
+using namespace std;
 
 namespace PLMD {
     class Keywords;
 
     class MetaInfBase {
         private:
-            double test;
+            const double sqrt2_div_pi;
+
+            // experimental values
+            vector<double> parameters;
+
+            // noise type
+            unsigned noise_type_;
+            enum { GAUSS, MGAUSS, OUTLIERS };
+
+            // scale is data scaling factor
+            unsigned scale_prior_;
+            enum { SC_GAUSS, SC_FLAT };
+            bool   doscale_;
+            double scale_;
+            double scale_mu_;
+            double scale_sigma_;
+            double scale_min_;
+            double scale_max_;
+            double Dscale_;
+
+            // sigma is data uncertainty
+            vector<double> sigma_;
+            double sigma_min_;
+            double sigma_max_;
+            double Dsigma_;
+
+            // sigma_mean is uncertainty in the mean estimate
+            vector<double> sigma_mean_;
+            vector<double> variance_;
+
+            // sigma_mean rescue params
+            double sm_mod_;
+            double sm_mod_min_;
+            double sm_mod_max_;
+            double Dsm_mod_;
+            double max_force_;
+
+            // temperature in kbt
+            double   kbt_;
+
+            // number of data points
+            unsigned ndata_;
+
+            // Monte Carlo stuff
+            vector<Random> random;
+            unsigned MCsteps_;
+            unsigned MCstride_;
+            long unsigned MCaccept_;
+            long unsigned MCtrial_;
+            double accept;
+
+            // restart
+            unsigned write_stride_;
+            OFile    sfile_;
+
+            // others
+            bool     master;
+            bool     do_reweight;
+            bool     do_optsigmamean_;
+            bool     do_mc_single_;
+            unsigned nrep_;
+            unsigned replica_;
+            unsigned narg;
+            vector<double> output_force;
+
+            // we need this for the forces
+            /* Atoms& atoms; */
+
+            double getEnergySPE(const vector<double> &mean,
+                                const vector<double> &sigma,
+                                const double scale);
+            double getEnergyGJE(const vector<double> &mean,
+                                const vector<double> &sigma,
+                                const double scale);
+            void doMonteCarlo(const vector<double> &mean_,
+                              Communicator& comm,
+                              Communicator& multi_sim_comm);
+            double getEnergyForceSPE(const vector<double> &arguments,
+                                     Communicator& comm,
+                                     Communicator& multi_sim_comm,
+                                     const vector<double> &mean,
+                                     const double fact);
+            double getEnergyForceGJE(const vector<double> &arguments,
+                                     Communicator& comm,
+                                     Communicator& multi_sim_comm,
+                                     const vector<double> &mean,
+                                     const double fact);
+        
         public:
             static void registerKeywords(Keywords& keys);
             MetaInfBase();
             ~MetaInfBase();
-            void set(const std::string& definition, std::string& errormsg);
-            double calculate(std::vector<double>& arguments);
+            void set(const std::string& definition,
+                     std::string& errormsg,
+                     vector<double>& datapoints,
+                     bool restart,
+                     double kBoltzmann,
+                     double kbt,
+                     Communicator& comm,
+                     Communicator& multi_sim_comm);
+            double calculate(vector<double>& arguments,
+                             const long int step,
+                             const bool exchange_step,
+                             Communicator& comm,
+                             Communicator& multi_sim_comm);
     };
 }
 

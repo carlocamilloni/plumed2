@@ -354,7 +354,7 @@ atoms(plumed.getAtoms())
 
   vector<double> readsigma;
   parseVector("SIGMA0",readsigma);
-  if((noise_type_!=MGAUSS||noise_type_!=MLOGNORMAL)&&readsigma.size()>1) 
+  if((noise_type_!=MGAUSS&&noise_type_!=MLOGNORMAL)&&readsigma.size()>1) 
     error("If you want to use more than one SIGMA you should use NOISETYPE=MGAUSS/MLOGNORMAL");
   if(noise_type_==MGAUSS||noise_type_==MLOGNORMAL) {
     if(readsigma.size()==narg) {
@@ -565,6 +565,7 @@ atoms(plumed.getAtoms())
   }
 
   log<<"  Bibliography "<<plumed.cite("Bonomi, Camilloni, Cavalli, Vendruscolo, Sci. Adv. 2, e150117 (2016)");
+  if(do_reweight) log<<plumed.cite("Bonomi, Camilloni, Vendruscolo, Sci. Rep. 6, 31232 (2016)");
   log<<"\n";
 }
 
@@ -796,7 +797,7 @@ double Metainference::getEnergyForceSPE(const vector<double> &mean, const double
   double w_tmp = 0.;
   for(unsigned i=0; i<narg; ++i) {
     setOutputForce(i, kbt_ * fact * f[i]);
-    w_tmp = fact*(getArgument(i) - mean[i])*f[i];
+    w_tmp += fact*(getArgument(i) - mean[i])*f[i];
   }
   if(do_reweight) {
     setOutputForce(narg, -w_tmp);

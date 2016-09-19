@@ -20,9 +20,12 @@
    along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 
-/* TODO: multiple timestep */
-/*       statusfiles */
-/*       sigma_mean opt */
+/* TODO: multiple timestep [x] */
+/*       statusfiles       [x] */
+/*       sigma_mean opt    [ ] */
+/*       bibliography      [ ] */
+/*       random numbers    [x] */
+/*       other components  [ ] */
 
 #include "MetaInfBase.h"
 #include "tools/Keywords.h"
@@ -64,6 +67,7 @@ namespace PLMD {
         keys.add("optional","TEMP","the system temperature - this is only needed if code doesnt' pass the temperature to plumed");
         keys.add("optional","MC_STEPS","number of MC steps");
         keys.add("optional","MC_STRIDE","MC stride");
+        keys.add("optional","STRIDE","calculation stride");
         keys.add("optional","STATUS_FILE","write a file with all the data usefull for restart/continuation of Metainference");
         keys.add("compulsory","WRITE_STRIDE","write the status to a file every N steps, this can be used for restart/continuation");
     }
@@ -75,7 +79,11 @@ namespace PLMD {
                           double kBoltzmann,
                           double kbt,
                           Communicator& comm,
-                          Communicator& multi_sim_comm) {
+                          Communicator& multi_sim_comm,
+                          Log& log,
+                          const std::string& label,
+                          IFile& restart_sfile,
+                          OFile& sfile) {
 
         parameters = datapoints;
         narg = datapoints.size();
@@ -114,9 +122,13 @@ namespace PLMD {
             errormsg = "Unknown noise type!"; 
         }
 
+        // Status file
         Tools::parse(data, "WRITE_STRIDE", write_stride_);
         string status_file_name_;
         Tools::parse(data, "STATUS_FILE", status_file_name_);
+        if (status_file_name_ == "") {
+            status_file_name_ = "MISTATUS" + label;
+        }
 
         Tools::parseFlag(data, "OPTSIGMAMEAN", do_optsigmamean_);
         Tools::parseFlag(data, "MCSINGLE", do_mc_single_);
@@ -194,8 +206,10 @@ namespace PLMD {
         Tools::parse(data, "MC_STEPS", MCsteps_);
         Tools::parse(data, "MC_STRIDE", MCstride_);
 
-        // TODO: adjust for multiple-time steps
-        /* MCstride_ *= stride; */
+        // TODO: TESTME
+        // adjust for multiple-time steps
+        Tools::parse(data, "STRIDE", stride);
+        MCstride_ *= stride;
 
         // get temperature
         double temp = 0.0;
@@ -266,6 +280,99 @@ namespace PLMD {
                 errormsg = errormsg + data[i] + " ";
             }
         }
+
+        // initialize random seed
+        unsigned iseed;
+        if (master) {
+            iseed = time(NULL)+replica_;
+        } else {
+            iseed = 0;     
+        }
+        comm.Sum(&iseed, 1);
+        random[0].setSeed(-iseed);
+        if (doscale_) {
+            // in this case we want the same seed everywhere
+            iseed = time(NULL);
+            if(master) {
+                multi_sim_comm.Bcast(iseed,0);
+            }
+            comm.Bcast(iseed, 0);
+            random[1].setSeed(-iseed);
+        }
+
+        // Also seed the RNG for random index selection
+        srand(time(NULL));
+
+        // Restart from status file if necessary
+        if (restart && restart_sfile.FileExist(status_file_name_)) {
+            restart_sfile.open(status_file_name_);
+            log.printf("  Restarting from %s\n", status_file_name_.c_str());
+            double dummy;
+            if (restart_sfile.scanField("time", dummy)) {
+                for (unsigned i=0; i<variance_.size(); ++i) {
+                    std::string msg;
+                    Tools::convert(i, msg);
+                    restart_sfile.scanField("variance_" + msg, variance_[i]);
+                }
+                for (unsigned i=0; i<sigma_.size(); ++i) {
+                    std::string msg;
+                    Tools::convert(i, msg);
+                    restart_sfile.scanField("sigma_" + msg, sigma_[i]);
+                }
+                if(doscale_) {
+                    restart_sfile.scanField("scale0_", scale_);
+                }
+                if(do_optsigmamean_) {
+                    restart_sfile.scanField("sigma_mean_mod0", sm_mod_);
+                }
+            }
+            restart_sfile.scanField();
+            restart_sfile.close();
+        }
+
+        // outfile stuff
+        if (write_stride_ > 0) {
+            sfile.open(status_file_name_);
+        }
+
+        switch (noise_type_) {
+            case GAUSS:
+                log.printf("  with gaussian noise and a single noise parameter for all the data\n");
+                break;
+            case MGAUSS:
+                log.printf("  with gaussian noise and a noise parameter for each data point\n");
+                break;
+            case OUTLIERS:
+                log.printf("  with long tailed gaussian noise and a single noise parameter for all the data\n");
+                break;
+        }
+
+        if (doscale_) {
+            log.printf("  sampling a common scaling factor with:\n");
+            log.printf("    initial scale parameter %f\n", scale_);
+            log.printf("    minimum scale parameter %f\n", scale_min_);
+            log.printf("    maximum scale parameter %f\n", scale_max_);
+            log.printf("    maximum MC move of scale parameter %f\n", Dscale_);
+        }
+
+        log.printf("  number of experimental data points %u\n", narg);
+        log.printf("  number of replicas %u\n", nrep_);
+        log.printf("  initial data uncertainties");
+        for (unsigned i=0; i<sigma_.size(); ++i) {
+            log.printf(" %f", sigma_[i]);
+        }
+        log.printf("\n");
+        log.printf("  minimum data uncertainty %f\n", sigma_min_);
+        log.printf("  maximum data uncertainty %f\n", sigma_max_);
+        log.printf("  maximum MC move of data uncertainty %f\n", Dsigma_);
+        log.printf("  temperature of the system %f\n", kbt_);
+        log.printf("  MC steps %u\n", MCsteps_);
+        log.printf("  MC stride %u\n", MCstride_);
+        log.printf("  initial standard errors of the mean");
+        for (unsigned i=0; i<sigma_mean_.size(); ++i) {
+            log.printf(" %f", sigma_mean_[i]);
+        }
+        log.printf("\n");
     }
 
     double MetaInfBase::getEnergySPE(const vector<double> &mean,
@@ -574,10 +681,13 @@ namespace PLMD {
     }
 
     double MetaInfBase::calculate(std::vector<double>& arguments,
+                                  double timestep,
                                   const long int step,
                                   const bool exchange_step,
+                                  const bool checkpoint,
                                   Communicator& comm,
-                                  Communicator& multi_sim_comm) {
+                                  Communicator& multi_sim_comm,
+                                  OFile& sfile) {
         double norm = 0.0;
         double fact = 0.0;
         double idof = 1.0;
@@ -654,6 +764,9 @@ namespace PLMD {
         if (step % MCstride_ == 0 && !exchange_step) {
             doMonteCarlo(mean, comm, multi_sim_comm);
         }
+        if (write_stride_ > 0 && (step % write_stride_ == 0 || checkpoint)) {
+            writeStatus(timestep, step, sfile);
+        }
 
         /* fix sigma_mean_ for the weighted average and the scaling factor */
         double modifier = scale_ * sqrt(idof);
@@ -682,6 +795,34 @@ namespace PLMD {
         return ene;
     }
 
+    void MetaInfBase::writeStatus(double timestep, unsigned step, OFile& sfile_) {
+        sfile_.rewind();
+        sfile_.printField("time", timestep * step);
+        for (unsigned i=0; i<variance_.size(); ++i) {
+            std::string msg;
+            Tools::convert(i,msg);
+            sfile_.printField("variance_"+msg, variance_[i]);
+        }
+        for (unsigned i=0; i<sigma_.size(); ++i) {
+            std::string msg;
+            Tools::convert(i, msg);
+            sfile_.printField("sigma_"+msg, sigma_[i]);
+        }
+        if (doscale_) {
+            sfile_.printField("scale0_", scale_);
+        }
+        if (do_optsigmamean_) {
+            sfile_.printField("sigma_mean_mod0", sm_mod_);
+        }
+        sfile_.printField();
+        sfile_.flush();
+    }
+
+    vector<double>& MetaInfBase::getOutputForce() {
+        return output_force;
+    }
+
+
     MetaInfBase::MetaInfBase():
         sqrt2_div_pi(0.45015815807855),
         doscale_(false),
@@ -700,10 +841,15 @@ namespace PLMD {
         MCtrial_(0),
         accept(0.),
         write_stride_(0),
+        stride(1),
         do_reweight(false),
         do_optsigmamean_(false),
         do_mc_single_(false)
     {}
 
-    MetaInfBase::~MetaInfBase() {}
+    MetaInfBase::~MetaInfBase() {
+        /* if (sfile_.isOpen()) { */
+        /*     sfile_.close(); */
+        /* } */
+    }
 }

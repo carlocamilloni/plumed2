@@ -454,6 +454,8 @@ class MICS2Backbone : public Colvar {
 
   CS2BackboneDB    db;
   MetaInfBase      mi;
+  OFile            sfile;
+  vector<double> expdata;
   vector<vector<Fragment> > atom;
   vector<RingInfo> ringInfo;
   vector<unsigned> seg_last;
@@ -487,6 +489,7 @@ class MICS2Backbone : public Colvar {
 public:
 
   explicit MICS2Backbone(const ActionOptions&);
+  ~MICS2Backbone();
   static void registerKeywords( Keywords& keys );
   virtual void calculate();
 };
@@ -648,6 +651,10 @@ pbc(true)
      <<plumed.cite("Kohlhoff K, Robustelli P, Cavalli A, Salvatella A, Vendruscolo M, J. Am. Chem. Soc. 131, 13894 (2009)")
      <<plumed.cite("Camilloni C, Robustelli P, De Simone A, Cavalli A, Vendruscolo M, J. Am. Chem. Soc. 134, 3968 (2012)")
      <<plumed.cite("Granata D, Camilloni C, Vendruscolo M, Laio A, Proc. Natl. Acad. Sci. USA 110, 6817 (2013)")<<"\n";
+  if (metai) {
+      log << "  Bibliography " << plumed.cite("Bonomi, Camilloni, Cavalli, Vendruscolo, Sci. Adv. 2, e150117 (2016)");
+      log << "\n";
+  }
 
   const string str_cs[] = {"ha_","hn_","nh_","ca_","cb_","co_"};
   unsigned index=0;
@@ -675,7 +682,6 @@ pbc(true)
     }
   }
 
-  vector<double> expdata;
   if(!noexp) {
     index = 0; 
     for(unsigned i=0;i<atom.size();i++) {
@@ -700,8 +706,11 @@ pbc(true)
   }
 
   if (metai) {
+      IFile restart_sfile;
+      restart_sfile.link(*this);
+      sfile.link(*this);
       mi.set(midata, errors, expdata, getRestart(), plumed.getAtoms().getKBoltzmann(),
-             plumed.getAtoms().getKbT(), comm, multi_sim_comm);
+             plumed.getAtoms().getKbT(), comm, multi_sim_comm, log, getLabel(), restart_sfile, sfile);
       if (errors.length() != 0) {
           error("Problem reading METAINFBASE keyword: " + errors);
       }
@@ -712,6 +721,12 @@ pbc(true)
  
   requestAtoms(atoms);
   printf("finished setup\n");
+}
+
+MICS2Backbone::~MICS2Backbone() {
+    if (sfile.isOpen()) {
+        sfile.close();
+    }
 }
 
 void MICS2Backbone::remove_problematic(const string &res, const string &nucl) {
@@ -788,13 +803,14 @@ void MICS2Backbone::calculate()
   const unsigned atleastned = 72+ringInfo.size()*6;
 
   vector<double> mi_args;
+  mi_args.reserve(expdata.size());
 
   // CYCLE OVER MULTIPLE CHAINS
   #pragma omp parallel num_threads(OpenMP::getNumThreads())
   for(unsigned s=0;s<chainsize;s++){
     const unsigned psize = atom[s].size();
     vector<Vector> omp_deriv;
-    if(camshift) omp_deriv.resize(getNumberOfAtoms(), Vector(0,0,0));
+    if(camshift || metai) omp_deriv.resize(getNumberOfAtoms(), Vector(0,0,0));
     #pragma omp for reduction(+:score) 
     // SKIP FIRST AND LAST RESIDUE OF EACH CHAIN
     for(unsigned a=1;a<psize-1;a++){
@@ -1125,8 +1141,7 @@ void MICS2Backbone::calculate()
       }
     }
     #pragma omp critical
-    if(camshift) for(int i=0;i<getPositions().size();i++) setAtomsDerivatives(i,omp_deriv[i]);
-    if(metai) for(int i=0;i<getPositions().size();i++) setAtomsDerivatives(i,Vector(0, 0, 0));
+    if(camshift) for(unsigned i=0;i<getPositions().size();i++) setAtomsDerivatives(i,omp_deriv[i]);
     index += psize;
   }
 
@@ -1135,8 +1150,21 @@ void MICS2Backbone::calculate()
     setBoxDerivativesNoPbc();
     setValue(score);
   } else if (metai) {
+    // Bias
+    const double metai_score = mi.calculate(mi_args, getTimeStep(), getStep(), getExchangeStep(),
+                                            getCPT(), comm, multi_sim_comm, sfile);
+
+    // Derivatives
     setBoxDerivativesNoPbc();
-    const double metai_score = mi.calculate(mi_args, getStep(), getExchangeStep(), comm, multi_sim_comm);
+    const vector<double> metai_forces = mi.getOutputForce();
+    for(unsigned s=0;s<chainsize;s++){
+      for(unsigned i=0;i<getPositions().size();i++) {
+        // FIXME ???
+        setAtomsDerivatives(i, -metai_forces[i] * Vector(1, 1, 1));
+      }
+    }
+
+    // Output
     setValue(metai_score);
   }
 

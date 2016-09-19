@@ -89,9 +89,9 @@ namespace PLMD {
 
             // restart
             unsigned write_stride_;
-            OFile    sfile_;
 
             // others
+            int      stride;
             bool     master;
             bool     do_reweight;
             bool     do_optsigmamean_;
@@ -123,11 +123,13 @@ namespace PLMD {
                                      Communicator& multi_sim_comm,
                                      const vector<double> &mean,
                                      const double fact);
+            void writeStatus(double timestep, unsigned step, OFile& sfile_);
         
         public:
             static void registerKeywords(Keywords& keys);
             MetaInfBase();
             ~MetaInfBase();
+            vector<double>& getOutputForce();
             void set(const std::string& definition,
                      std::string& errormsg,
                      vector<double>& datapoints,
@@ -135,12 +137,19 @@ namespace PLMD {
                      double kBoltzmann,
                      double kbt,
                      Communicator& comm,
-                     Communicator& multi_sim_comm);
+                     Communicator& multi_sim_comm,
+                     Log& log,
+                     const std::string& label,
+                     IFile& restart_sfile,
+                     OFile& sfile);
             double calculate(vector<double>& arguments,
+                             double timestep,
                              const long int step,
                              const bool exchange_step,
+                             const bool checkpoint,
                              Communicator& comm,
-                             Communicator& multi_sim_comm);
+                             Communicator& multi_sim_comm,
+                             OFile& sfile);
     };
 }
 

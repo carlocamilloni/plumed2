@@ -861,7 +861,6 @@ void MICS2Backbone::calculate()
       // CYCLE OVER THE SIX BACKBONE CHEMICAL SHIFTS
       for(unsigned at_kind=0;at_kind<6;at_kind++){
         if(atom[s][a].exp_cs[at_kind]!=0){
-          col++;
           // Common constant and AATYPE
           const double * CONSTAACURR = db.CONSTAACURR(aa_kind,at_kind);
           const double * CONSTAANEXT = db.CONSTAANEXT(aa_kind,at_kind);
@@ -1158,6 +1157,7 @@ void MICS2Backbone::calculate()
             {
               mi_args[col] = cs;
               for(unsigned i=0;i<list.size();i++) atom_derivs[list[i]][col] += fact * ff[i];
+              col++;
             }
           } else {
             // but I would also divide for the weights derived with metainference

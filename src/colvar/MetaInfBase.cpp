@@ -67,7 +67,6 @@ namespace PLMD {
         keys.add("optional","TEMP","the system temperature - this is only needed if code doesnt' pass the temperature to plumed");
         keys.add("optional","MC_STEPS","number of MC steps");
         keys.add("optional","MC_STRIDE","MC stride");
-        keys.add("optional","STRIDE","calculation stride");
         keys.add("optional","STATUS_FILE","write a file with all the data usefull for restart/continuation of Metainference");
         keys.add("compulsory","WRITE_STRIDE","write the status to a file every N steps, this can be used for restart/continuation");
     }
@@ -205,11 +204,6 @@ namespace PLMD {
         // monte carlo stuff
         Tools::parse(data, "MC_STEPS", MCsteps_);
         Tools::parse(data, "MC_STRIDE", MCstride_);
-
-        // TODO: TESTME
-        // adjust for multiple-time steps
-        Tools::parse(data, "STRIDE", stride);
-        MCstride_ *= stride;
 
         // get temperature
         double temp = 0.0;
@@ -773,6 +767,7 @@ namespace PLMD {
 
         /* fix sigma_mean_ for the effect of large forces */
         if (do_optsigmamean_) {
+            /* optSigmaMean(comm, multi_sim_comm); */
             modifier *= sm_mod_;
         }
         for (unsigned i=0; i<sigma_mean_.size(); ++i) {
@@ -790,6 +785,15 @@ namespace PLMD {
                 ene = getEnergyForceSPE(arguments, comm, multi_sim_comm, mean, fact);
                 break;
         }
+
+        // TODO
+        // checkforces
+        // if ok lets go on
+        // else modifier=xx
+        // so
+        //
+        //
+        // assign derivatives
 
         // set value of the bias
         return ene;
@@ -818,6 +822,77 @@ namespace PLMD {
         sfile_.flush();
     }
 
+    void MetaInfBase::optSigmaMean(Communicator& comm,
+                                   Communicator& multi_sim_comm) {
+
+        const double EPS = 0.1;
+
+        // Get max force of whole system
+        vector<Vector> md_forces;
+        vector<Vector> plumed_forces;
+        vector<double> masses;
+
+        /* atoms.getLocalMDForces(md_forces); */
+        /* atoms.getLocalForces(plumed_forces); */
+        /* atoms.getLocalMasses(masses); */
+
+        vector<double> allforces_md;
+        allforces_md.reserve(md_forces.size());
+
+        for(unsigned i = 0; i < plumed_forces.size(); ++i) {
+            const double pf2 = plumed_forces[i].modulo2();
+
+            // we are only interested in forces plumed has an effect on
+            if(pf2 > EPS && masses[i] > EPS ) {
+                const double invm2 = 1. / (masses[i] * masses[i]);
+                allforces_md.push_back(md_forces[i].modulo2() * invm2);
+            }
+        }
+
+        vector<double> fmax_tmp_md(comm.Get_size(), 0);
+        vector<double> nfmax_md(nrep_, 0);
+
+        /* each local thread should look for the maximum force and number of violations */
+        if (allforces_md.size() > 0) {
+            fmax_tmp_md[comm.Get_rank()] = *max_element(allforces_md.begin(), allforces_md.end());
+            for(unsigned i = 0; i < allforces_md.size(); ++i) {
+                if(allforces_md[i] > max_force_) {
+                    nfmax_md[replica_] += allforces_md[i] / max_force_;
+                }
+            }
+        }
+
+        // the largest forces are shared among the local threads but not over the replicas 
+        comm.Sum(fmax_tmp_md);
+
+        // these are the largest forces for a specific replica
+        fmax_ = sqrt(*max_element(fmax_tmp_md.begin(), fmax_tmp_md.end()));
+
+        // the number of violations is summed up over the local thread and over the replicas 
+        comm.Sum(nfmax_md);
+        if(master && nrep_ > 1) {
+            multi_sim_comm.Sum(nfmax_md);
+        }
+        comm.Bcast(&nfmax_md[0], nrep_, 0);
+
+        const double nnfmax_md = (*max_element(nfmax_md.begin(), nfmax_md.end()))*nrep_;
+
+        if( nnfmax_md == 0) {
+            sm_mod_ -= Dsm_mod_ * 0.01 * std::log(sm_mod_ / sm_mod_min_);
+            if(sm_mod_<sm_mod_min_) {
+                sm_mod_ = sm_mod_min_;
+            }
+        } else {
+            const double sm_mod_new = sm_mod_ + Dsm_mod_ * std::log(nnfmax_md + 1.);
+            if(sm_mod_new > sm_mod_max_) {
+                sm_mod_ = sm_mod_max_;
+            } else {
+                sm_mod_ = sm_mod_new;
+            }
+        }
+
+    }
+
     vector<double>& MetaInfBase::getOutputForce() {
         return output_force;
     }
@@ -841,7 +916,6 @@ namespace PLMD {
         MCtrial_(0),
         accept(0.),
         write_stride_(0),
-        stride(1),
         do_reweight(false),
         do_optsigmamean_(false),
         do_mc_single_(false)

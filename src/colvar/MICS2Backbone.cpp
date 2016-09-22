@@ -466,6 +466,7 @@ class MICS2Backbone : public Colvar {
   bool             camshift;
   bool             pbc;
   bool             metai;
+  unsigned         ncols;
 
   void remove_problematic(const string &res, const string &nucl);
   void read_cs(const string &file, const string &k);
@@ -637,6 +638,7 @@ pbc(true)
   vector<AtomNumber> atoms;
   parseAtomList("ATOMS",atoms);
 
+  // Parse Metainference data
   std::string midata, errors;
   parse("MI", midata);
   if (midata.size() > 0) {
@@ -682,6 +684,15 @@ pbc(true)
     }
   }
 
+  // Number of shifts
+  for(unsigned i=0;i<atom.size();i++) {
+      for(unsigned a=0;a<atom[i].size();a++) {
+          for(unsigned at_kind=0;at_kind<6;at_kind++){
+              ncols++;
+          }
+      }
+  }
+
   if(!noexp) {
     index = 0; 
     for(unsigned i=0;i<atom.size();i++) {
@@ -706,9 +717,13 @@ pbc(true)
   }
 
   if (metai) {
+      // File linking is only permitted in Actions, so we have
+      // to do it here and send the linked objects to MetaInfBase
       IFile restart_sfile;
       restart_sfile.link(*this);
       sfile.link(*this);
+
+      // We need to pass this stuff because MetaInfBase is not an action
       mi.set(midata, errors, expdata, getRestart(), plumed.getAtoms().getKBoltzmann(),
              plumed.getAtoms().getKbT(), comm, multi_sim_comm, log, getLabel(), restart_sfile, sfile);
       if (errors.length() != 0) {
@@ -802,8 +817,18 @@ void MICS2Backbone::calculate()
   const unsigned chainsize = atom.size();
   const unsigned atleastned = 72+ringInfo.size()*6;
 
+  // Vector of chemical shifts to be passed to Metainference
   vector<double> mi_args;
-  mi_args.reserve(expdata.size());
+
+  // Prepare matrix (Atoms x Shifts) of derivatives for all atoms
+  unsigned col = 0;
+  vector<vector<Vector> > atom_derivs;
+  const unsigned nrows = getNumberOfAtoms();
+  atom_derivs.resize(nrows);
+  for (unsigned i=0; i<nrows; ++i) {
+      atom_derivs[i].resize(ncols, Vector(0, 0, 0));
+  }
+  mi_args.resize(ncols);
 
   // CYCLE OVER MULTIPLE CHAINS
   #pragma omp parallel num_threads(OpenMP::getNumThreads())
@@ -811,7 +836,7 @@ void MICS2Backbone::calculate()
     const unsigned psize = atom[s].size();
     vector<Vector> omp_deriv;
     if(camshift || metai) omp_deriv.resize(getNumberOfAtoms(), Vector(0,0,0));
-    #pragma omp for reduction(+:score) 
+    #pragma omp for ordered reduction(+:score) 
     // SKIP FIRST AND LAST RESIDUE OF EACH CHAIN
     for(unsigned a=1;a<psize-1;a++){
 
@@ -836,6 +861,7 @@ void MICS2Backbone::calculate()
       // CYCLE OVER THE SIX BACKBONE CHEMICAL SHIFTS
       for(unsigned at_kind=0;at_kind<6;at_kind++){
         if(atom[s][a].exp_cs[at_kind]!=0){
+          col++;
           // Common constant and AATYPE
           const double * CONSTAACURR = db.CONSTAACURR(aa_kind,at_kind);
           const double * CONSTAANEXT = db.CONSTAANEXT(aa_kind,at_kind);
@@ -1128,8 +1154,11 @@ void MICS2Backbone::calculate()
             for(unsigned i=0;i<list.size();i++) setAtomsDerivatives(comp,list[i],fact*ff[i]);
             setBoxDerivativesNoPbc(comp);
           } else if (metai) {
-            comp = getPntrToValue();
-            mi_args.push_back(cs);
+            #pragma omp ordered
+            {
+              mi_args[col] = cs;
+              for(unsigned i=0;i<list.size();i++) atom_derivs[list[i]][col] += fact * ff[i];
+            }
           } else {
             // but I would also divide for the weights derived with metainference
             comp = getPntrToValue();
@@ -1137,7 +1166,7 @@ void MICS2Backbone::calculate()
             fact = 2.0*(cs - atom[s][a].exp_cs[at_kind])/camshift_sigma2[at_kind];
             for(unsigned i=0;i<list.size();i++) omp_deriv[list[i]] += fact*ff[i];
           }
-        } 
+        }
       }
     }
     #pragma omp critical
@@ -1153,18 +1182,21 @@ void MICS2Backbone::calculate()
     // Bias
     const double metai_score = mi.calculate(mi_args, getTimeStep(), getStep(), getExchangeStep(),
                                             getCPT(), comm, multi_sim_comm, sfile);
-
     // Derivatives
-    setBoxDerivativesNoPbc();
     const vector<double> metai_forces = mi.getOutputForce();
-    for(unsigned s=0;s<chainsize;s++){
-      for(unsigned i=0;i<getPositions().size();i++) {
-        // FIXME ???
-        setAtomsDerivatives(i, -metai_forces[i] * Vector(1, 1, 1));
-      }
-    }
 
-    // Output
+    // loop over atoms
+    for (unsigned i=0; i<nrows; ++i) {
+        Vector deriv = Vector(0, 0, 0);
+        // loop over chemical shifts
+        for (unsigned j=0; j<ncols; ++j) {
+            deriv += -metai_forces[j] * atom_derivs[i][j];
+        }
+        setAtomsDerivatives(i, deriv);
+    }
+    setBoxDerivativesNoPbc();
+
+    // Bias is our only output
     setValue(metai_score);
   }
 

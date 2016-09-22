@@ -72,6 +72,7 @@ namespace PLMD {
             double sm_mod_max_;
             double Dsm_mod_;
             double max_force_;
+            double fmax_;
 
             // temperature in kbt
             double   kbt_;
@@ -91,7 +92,6 @@ namespace PLMD {
             unsigned write_stride_;
 
             // others
-            int      stride;
             bool     master;
             bool     do_reweight;
             bool     do_optsigmamean_;
@@ -100,9 +100,6 @@ namespace PLMD {
             unsigned replica_;
             unsigned narg;
             vector<double> output_force;
-
-            // we need this for the forces
-            /* Atoms& atoms; */
 
             double getEnergySPE(const vector<double> &mean,
                                 const vector<double> &sigma,
@@ -124,6 +121,8 @@ namespace PLMD {
                                      const vector<double> &mean,
                                      const double fact);
             void writeStatus(double timestep, unsigned step, OFile& sfile_);
+            void optSigmaMean(Communicator& comm,
+                              Communicator& multi_sim_comm);
         
         public:
             static void registerKeywords(Keywords& keys);

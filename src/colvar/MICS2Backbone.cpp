@@ -393,6 +393,7 @@ class MICS2Backbone : public Colvar {
     unsigned res_type_next;
     unsigned res_kind;
     unsigned fd;
+    vector<unsigned> col;
     string res_name;
     vector<int> pos;
     vector<int> prev;
@@ -416,6 +417,7 @@ class MICS2Backbone : public Colvar {
       res_type_prev = res_type_curr = res_type_next = 0;
       res_kind = 0;
       fd = 0;
+      col.resize(6,0);
       res_name = ""; 
       pos.resize(6,-1);
       prev.reserve(5);
@@ -685,10 +687,14 @@ pbc(true)
   }
 
   // Number of shifts
+  ncols = 0;
   for(unsigned i=0;i<atom.size();i++) {
-      for(unsigned a=0;a<atom[i].size();a++) {
+      for(unsigned a=1;a<atom[i].size()-1;a++) {
           for(unsigned at_kind=0;at_kind<6;at_kind++){
-              ncols++;
+              if(atom[i][a].exp_cs[at_kind]!=0) {
+                atom[i][a].col[at_kind] = ncols;
+                ncols++;
+              }
           }
       }
   }
@@ -696,7 +702,7 @@ pbc(true)
   if(!noexp) {
     index = 0; 
     for(unsigned i=0;i<atom.size();i++) {
-      for(unsigned a=0;a<atom[i].size();a++) {
+      for(unsigned a=1;a<atom[i].size()-1;a++) {
         unsigned res=index+a;
         std::string num; Tools::convert(res,num);
         for(unsigned at_kind=0;at_kind<6;at_kind++){
@@ -821,12 +827,11 @@ void MICS2Backbone::calculate()
   vector<double> mi_args;
 
   // Prepare matrix (Atoms x Shifts) of derivatives for all atoms
-  unsigned col = 0;
   vector<vector<Vector> > atom_derivs;
   const unsigned nrows = getNumberOfAtoms();
   atom_derivs.resize(nrows);
   for (unsigned i=0; i<nrows; ++i) {
-      atom_derivs[i].resize(ncols, Vector(0, 0, 0));
+      atom_derivs[i].resize(ncols, Vector(0,0,0));
   }
   mi_args.resize(ncols);
 
@@ -836,7 +841,7 @@ void MICS2Backbone::calculate()
     const unsigned psize = atom[s].size();
     vector<Vector> omp_deriv;
     if(camshift || metai) omp_deriv.resize(getNumberOfAtoms(), Vector(0,0,0));
-    #pragma omp for ordered reduction(+:score) 
+    #pragma omp for reduction(+:score) 
     // SKIP FIRST AND LAST RESIDUE OF EACH CHAIN
     for(unsigned a=1;a<psize-1;a++){
 
@@ -1153,12 +1158,8 @@ void MICS2Backbone::calculate()
             for(unsigned i=0;i<list.size();i++) setAtomsDerivatives(comp,list[i],fact*ff[i]);
             setBoxDerivativesNoPbc(comp);
           } else if (metai) {
-            #pragma omp ordered
-            {
-              mi_args[col] = cs;
-              for(unsigned i=0;i<list.size();i++) atom_derivs[list[i]][col] += fact * ff[i];
-              col++;
-            }
+            mi_args[atom[s][a].col[at_kind]] = cs;
+            for(unsigned i=0;i<list.size();i++) atom_derivs[list[i]][atom[s][a].col[at_kind]] += fact * ff[i];
           } else {
             // but I would also divide for the weights derived with metainference
             comp = getPntrToValue();
@@ -1186,10 +1187,11 @@ void MICS2Backbone::calculate()
     const vector<double> metai_forces = mi.getOutputForce();
 
     // loop over atoms
-    for (unsigned i=0; i<nrows; ++i) {
+    #pragma omp parallel for num_threads(OpenMP::getNumThreads())
+    for (unsigned i=0; i<nrows; i++) {
         Vector deriv = Vector(0, 0, 0);
         // loop over chemical shifts
-        for (unsigned j=0; j<ncols; ++j) {
+        for (unsigned j=0; j<ncols; j++) {
             deriv += -metai_forces[j] * atom_derivs[i][j];
         }
         setAtomsDerivatives(i, deriv);

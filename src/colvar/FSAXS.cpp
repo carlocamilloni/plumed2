@@ -208,6 +208,8 @@ serial(false)
 
   requestAtoms(atoms);
   checkRead();
+//precalculates coefficients for derivatives
+  cal_coeff();
 }
 
 
@@ -229,18 +231,14 @@ void FSAXS::calculate(){
   const unsigned int                           size = getNumberOfAtoms();
 //scattering profile I
   vector<double>                               I(numq);
-//vectors for the expansion coefficients of the derivatives of the spherical basis functions
-  vector<Vector2d>	                       aX(p2);
-  vector<Vector2d>	                       aY(p2);
-  vector<Vector2d>	                       aZ(p2);
-//vector of the derivatives of the expanded functions psi
-  Vector                 	               dPsi;
 //Jacobian
   vector<Vector>                               deriv(numq*size);
-//vector for box derivatives
-  vector<Tensor>                               deriv_box(numq);
 //vector for the real and imaginary parts of the spherical basis functions
-  vector<Vector2d>                             decRnm(p2*size);
+  vector<Vector2d>                             qRnm(p2*size);
+//vector for expansion factors of the scattering profile I(q)
+  vector<Vector2d>                             Bnm(p2);
+//vectors for the expansion coefficients of the derivatives of the spherical basis functions
+  vector<Vector2d>	                       a(3*p2);
 
 //creates a vector of atomic positions in polar coordinates
   polar.resize(size);
@@ -252,64 +250,43 @@ void FSAXS::calculate(){
 //phi
     polar[i][2]=atan2(getPosition(i)[1],getPosition(i)[0]);
   }
-  if(!serial) comm.Sum(&polar[0][0], 2*size);
-
-//precalculates coefficients for derivatives
-  cal_coeff();
 
 //as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
-for(int n=0;n<truncation;n+=1) {
-  for(int m=0;m<(n+1);m++) {
-    int order=m-n;
-    int s                   = n * n + m;
-    int t                   = s - 2 * order;
-    for(unsigned int i=rank;i<size;i+=stride) {
-      int x                 = p2 * i + s;
-      int y                 = p2 * i + t;
+
+for(unsigned int i=rank;i<size;i+=stride) {
+  for(int n=0;n<truncation;n+=1) {
+    for(int m=0;m<(n+1);m++) {
+      int order             = m  - n;
+      int x                 = p2 * i + n  * n + m;
       double gsl            =      gsl_sf_legendre_sphPlm(n,abs(order),polar[i][1]);
 //real part of the spherical basis function of order m, degree n of atom i
-      decRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
+      qRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
 //imaginary part of the spherical basis function of order m, degree n of atom i
-      decRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
-//real part of the spherical basis function of order -m, degree n of atom i
-      decRnm[y][0]          =      decRnm[x][0];
-//imaginary part of the spherical basis function of order -m, degree n of atom i
-      decRnm[y][1]          = -1.* decRnm[x][1];
+      qRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
       }
     }
   }
-  if(!serial) comm.Sum(&decRnm[0][0], 2*p2*size);
 
 //sum over qvalues
   for (unsigned k=0; k<numq; k++) {
-    I[k]               = 0;
+//clear vectors for profile, derivatives and coefficients
     const unsigned kN  = k * size;
-//the vector of spherical basis functions = decRnm * gsl_sf_bessel_jl
-    vector<Vector2d> qRnm(p2*size);
-//vector for expansion factors of the scattering profile I(q)
-    vector<Vector2d> Bnm(p2);
-
+    for(unsigned int j=0;j<p2;j++)   Bnm[j].zero();
+    for(unsigned int j=0;j<p2*3;j++) a[j].zero();
 //double sum over the p^2 expansion terms
-    for(int n=0;n<truncation;n+=1) {
-      vector<double> bessel(size);
+    for(unsigned int i=rank;i<size;i+=stride) {
+      for(int n=0;n<truncation;n+=1) {
 //the spherical bessel functions do not depend on the order and are therefore precomputed here
-      for(unsigned int i=rank;i<size;i+=stride) bessel [i] = gsl_sf_bessel_jl(n,polar[i][0]* q_list[k]);
-      if(!serial) comm.Sum(&bessel[0],  size);
-      for(int m=0;m<(n+1);m++) {
+        double bessel           = gsl_sf_bessel_jl(n,polar[i][0]* q_list[k]);
 //here conj(R(m,n))=R(-m,n) is used to decrease the terms in the sum over m by a factor of two
-        int order=m-n;
-        int s                   = n * n + m;
-        int t                   = s - 2 * order;
-        Bnm[s][0]               = 0;
-        Bnm[s][1]               = 0;
-        Bnm[t][0]               = 0;
-        Bnm[t][1]               = 0; 
-        for(unsigned int i=rank;i<size;i+=stride) {
-//form factor of i at qvalue k multiplied by the spherical harmonics described by Gumerov et al. 2012 --> expansion coefficients
+        for(int m=0;m<(n+1);m++) {
+          int order             = m-n;
+          int s                 = n  * n + m;
+          int t                 = s  - 2 * order;
           int x                 = p2 * i + s;
           int y                 = p2 * i + t;
 //real part of the spherical basis function of order m, degree n of atom i
-          qRnm[x]               = decRnm[x]      * bessel[i];
+          qRnm[x]              *= bessel;
 //real part of the spherical basis function of order -m, degree n of atom i
           qRnm[y][0]            = qRnm[x][0];
 //imaginary part of the spherical basis function of order -m, degree n of atom i
@@ -317,81 +294,72 @@ for(int n=0;n<truncation;n+=1) {
 //expansion coefficient of order m and degree n
           Bnm[s]               += FF_value[k][i] * qRnm[y];
 //correction for expansion coefficient of order -m and degree n
-          if(m-n!=0) Bnm[t]    += FF_value[k][i] * qRnm[x];
-        } 
+          if(order!=0) Bnm[t]  += FF_value[k][i] * qRnm[x];
+        }   
       }
     }
-if(!serial) {
-     comm.Sum(&Bnm[0][0],  2*p2);
-     comm.Sum(&qRnm[0][0], 2*p2*size);
-} 
 
 //calculate expansion coefficients for the derivatives
+  for(unsigned int i=rank;i<size;i+=stride) {
     for(int n=0;n<truncation-1;n++) {
       for(int m=0;m<(2*n)+1;m++) {
-        int s          = n * n + m;
-        aX[s][0]       = 0;
-        aX[s][1]       = 0;
-        aY[s][0]       = 0;
-        aY[s][1]       = 0;
-        aZ[s][0]       = 0;
-        aZ[s][1]       = 0;
-//calculation of the scattering profile I of the kth scattering wavenumber q
-        I[k]          += Bnm[s][0]      * Bnm[s][0] + Bnm[s][1] * Bnm[s][1];
-//calculate scattering profile I as sum of the norms of the expansion coefficients 
-        for(unsigned int i=rank;i<size;i+=stride) {
-          aX[s]       += FF_value[k][i] * dXHarmonics(k,i,n,m,qRnm);
-          aY[s]       += FF_value[k][i] * dYHarmonics(k,i,n,m,qRnm);
-          aZ[s]       += FF_value[k][i] * dZHarmonics(k,i,n,m,qRnm);
+        int t        =3*(n * n + m);
+        a[t]        += FF_value[k][i] * dXHarmonics(k,i,n,m,qRnm);
+        a[t+1]      += FF_value[k][i] * dYHarmonics(k,i,n,m,qRnm);
+        a[t+2]      += FF_value[k][i] * dZHarmonics(k,i,n,m,qRnm); 
         }
       }
     }
-if(!serial) {
-     comm.Sum(&aX[0][0], 2*p2);
-     comm.Sum(&aY[0][0], 2*p2);
-     comm.Sum(&aZ[0][0], 2*p2);
-}
-
-//calculation of (box)derivatives
-      for(unsigned int i=rank;i<size;i+=stride) {
-      dPsi[0]             = 0;
-      dPsi[1]             = 0;
-      dPsi[2]             = 0;
-      deriv[kN+i][0]      = 0;
-      deriv[kN+i][1]      = 0;
-      deriv[kN+i][2]      = 0;
-      int s               = p2 *i;
-      for(int n=0;n<truncation-1;n++) {
-        for(int m=0;m<(2*n)+1;m++) {
-          int x= n * n + m;
-          int y= x + s;
-          dPsi[0]        += qRnm[y][0] * aX[x][0] + qRnm[y][1] * aX[x][1];
-          dPsi[1]        += qRnm[y][0] * aY[x][1] - qRnm[y][1] * aY[x][0];
-          dPsi[2]        += qRnm[y][0] * aZ[x][0] + qRnm[y][1] * aZ[x][1];
-        } 
-      }
-      deriv[kN+i][0]     += 0.5 * FF_value[k][i] * dPsi[0];
-      deriv[kN+i][1]     += 0.5 * FF_value[k][i] * dPsi[1];
-      deriv[kN+i][2]     +=       FF_value[k][i] * dPsi[2];
-//box derivatives
-      const Vector posi   = getPosition(i);
-      deriv_box[k]       += Tensor(posi,deriv[kN+i]);
-    }
+  if(!serial) {
+    comm.Sum(&Bnm[0][0],2*p2);
+    comm.Sum(&a[0][0],  6*p2);
   }
 
-if(!serial) {
-    comm.Sum(&deriv[0][0], 3*deriv.size());
-    comm.Sum(&deriv_box[0][0][0], numq*9);
+//calculation of the scattering profile I of the kth scattering wavenumber q
+  for(int n=rank;n<truncation;n+=stride) {
+    for(int m=0;m<(2*n)+1;m++) {
+      int s          = n * n + m;
+      I[k]          += Bnm[s][0] * Bnm[s][0] + Bnm[s][1] * Bnm[s][1];
+    }
+  }
+  
+//calculation of (box)derivatives
+    for(unsigned int i=rank;i<size;i+=stride) {
+//vector of the derivatives of the expanded functions psi
+      Vector             dPsi;
+      int s               = p2 * i;
+      for(int n=0;n<truncation-1;n++) {
+        double bessel           = gsl_sf_bessel_jl(n,polar[i][0]* q_list[k]);
+        for(int m=0;m<(2*n)+1;m++) {
+          int y           = n  * n + m  + s;
+          int z           = 3*(n*n+m);
+          dPsi[0]        += 0.5*(qRnm[y][0] * a[z][0]   + qRnm[y][1] * a[z][1]);
+          dPsi[1]        += 0.5*(qRnm[y][0] * a[z+1][1] - qRnm[y][1] * a[z+1][0]);
+          dPsi[2]        +=      qRnm[y][0] * a[z+2][0] + qRnm[y][1] * a[z+2][1];
+          qRnm[y]        /= bessel; 
+        } 
+      }
+      deriv[kN+i]        += FF_value[k][i] * dPsi;
+    }
+//end of the k loop
+  }
+  if(!serial) {
+    comm.Sum(&I[0],               numq);
+    comm.Sum(&deriv[0][0],        3*deriv.size());
   }
 
 //output (box)derivatives and scattering profile
 //#pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for(unsigned k=0; k<numq; k++) {
+  Tensor                               deriv_box;
     const unsigned kN     = k * size;
     Value* val            = getPntrToComponent(k);
-    for(unsigned i=0; i<size; i++) setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
+    for(unsigned i=0; i<size; i++) {
+      setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
+      deriv_box += Tensor(getPosition(i),deriv[kN+i]);
+    }
     I[k]                  = 4 * M_PI*I[k];
-    setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box[k]);
+    setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
     val->set(I[k]);
   }
 }
@@ -430,25 +398,25 @@ void FSAXS::cal_coeff() {
 
 //partial derivatives of the spherical basis functions
 Vector2d FSAXS::dXHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &qRnm) {
-Vector2d                              dRdc =     (bvals[(n+1)*(n+1)+m-2*(m-n)] * qRnm[p2*i+(n+1)*(n+1)+m+2] + bvals[(n+1)*(n+1)+m] * qRnm[p2*i+(n+1)*(n+1)+m]);
-if((abs(m-n-1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*n+m-2*(m-n)]         * qRnm[p2*i+(n-1)*(n-1)+m-2];
-if((abs(m-n+1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*n+m]                 * qRnm[p2*i+(n-1)*(n-1)+m];
+  Vector2d                              dRdc =     (bvals[n*(n+4)-m+1] * qRnm[p2*i+n*(n+2)+m+3] + bvals[n*(n+2)+m+1] * qRnm[p2*i+n*(n+2)+m+1]);
+  if((abs(m-n-1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*(n+2)-m]   * qRnm[p2*i+n*(n-2)+m-1];
+  if((abs(m-n+1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*n+m]       * qRnm[p2*i+n*n-2*n+m+1];
 return dRdc;
 }
 
 
 Vector2d FSAXS::dYHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &qRnm) {
-Vector2d                              dRdc =     (bvals[(n+1)*(n+1)+m-2*(m-n)] * qRnm[p2*i+(n+1)*(n+1)+m+2] - bvals[(n+1)*(n+1)+m] * qRnm[p2*i+(n+1)*(n+1)+m]);
-if((abs(m-n-1)<=(n-1))&&((n-1)>=0))   dRdc+=      bvals[n*n+m-2*(m-n)]         * qRnm[p2*i+(n-1)*(n-1)+m-2];
-if((abs(m-n+1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*n+m]                 * qRnm[p2*i+(n-1)*(n-1)+m];
-return dRdc;
+  Vector2d                              dRdc =     (bvals[n*(n+4)-m+1] * qRnm[p2*i+n*(n+2)+m+3] - bvals[n*(n+2)+m+1] * qRnm[p2*i+n*(n+2)+m+1]);
+  if((abs(m-n-1)<=(n-1))&&((n-1)>=0))   dRdc+=      bvals[n*(n+2)-m]   * qRnm[p2*i+n*(n-2)+m-1];
+  if((abs(m-n+1)<=(n-1))&&((n-1)>=0))   dRdc-=      bvals[n*n+m]       * qRnm[p2*i+n*(n-2)+m+1];
+  return dRdc;
 }
 
 
 Vector2d FSAXS::dZHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &qRnm) {
-  Vector2d                              dRdc = -1 * avals[n*n+m]               * qRnm[p2*i+(n+1)*(n+1)+m+1];
-  if((abs(m-n)<=(n-1))&&((n-1)>=0))     dRdc+=      avals[(n-1)*(n-1)+m-1]     * qRnm[p2*i+(n-1)*(n-1)+m-1];
-return dRdc;
+  Vector2d                              dRdc = -1 * avals[n*n+m]       * qRnm[p2*i+n*(n+2)+m+2];
+  if((abs(m-n)<=(n-1))&&((n-1)>=0))     dRdc+=      avals[n*(n-2)+m]   * qRnm[p2*i+n*(n-2)+m];
+  return dRdc;
 }
 
 

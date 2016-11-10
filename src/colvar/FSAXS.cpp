@@ -54,15 +54,17 @@ class FSAXS : public Colvar {
 private:
   bool                     pbc;
   bool                     serial;
+  bool                     verbose;
+  bool                     fixedq;
   unsigned                 numq;
   int      		   truncation;
   vector<double>           q_list;
   vector<vector<double> >  FF_value;
   vector<double>           FF_rank;
-  vector<Vector>           polar;
   vector<double>           avals;
   vector<double>           bvals;
   unsigned int             p2;
+  double                   maxdist;
 
 public:
   static void              registerKeywords( Keywords& keys );
@@ -86,6 +88,8 @@ void FSAXS::registerKeywords(Keywords& keys){
   componentsAreNotOptional(keys);
   useCustomisableComponents(keys);
   keys.addFlag("SERIAL",false,"Perform the calculation in serial - for debug purpose");
+  keys.addFlag("VERBOSE",false,"log truncation number for each q_value - for debug purpose");
+  keys.addFlag("FIXEDQ",false,"use same truncation for each q_value - for debug purpose");
   keys.addFlag("ATOMISTIC",false,"calculate SAXS for an atomistic model");
   keys.add("atoms","ATOMS","The atoms to be included in the calculation, e.g. the whole protein.");
   keys.add("compulsory","NUMQ","Number of used q values");
@@ -108,6 +112,8 @@ serial(false)
   const unsigned size = atoms.size();
 
   parseFlag("SERIAL",serial);
+  parseFlag("VERBOSE",verbose);
+  parseFlag("FIXEDQ",fixedq);
 //no pbcs used
   bool nopbc=!pbc;
   parseFlag("NOPBC",nopbc);
@@ -119,6 +125,7 @@ serial(false)
 //read in a truncation value
   truncation= 15;
   parse("TRUNCATION",truncation);
+  truncation+=2;
   p2   = truncation*truncation;
 //read experimental scaling factor
   double scexp = 0;
@@ -141,6 +148,7 @@ serial(false)
     addComponentWithDerivatives("q_"+num);
     componentIsNotPeriodic("q_"+num);
   }
+
 //this flag should switch between MARTINI and atomistic calculations
   bool atomistic=false;
   parseFlag("ATOMISTIC",atomistic);
@@ -217,6 +225,11 @@ serial(false)
 void FSAXS::calculate(){
   if(pbc) makeWhole();
 
+//parameter for dynamic truncation. Assumes that the user chose the truncation according to formula (24) in Gumerov et al. 2012
+  maxdist=truncation/(q_list[numq-1]);
+  log<<"maxq "<<q_list[numq-1]/10<<"\n";
+  log<<"maxdist "<<maxdist<<"\n";
+
 //get parameters for mpi parallelization
   unsigned stride=comm.Get_size();
   unsigned rank=comm.Get_rank();
@@ -233,15 +246,9 @@ void FSAXS::calculate(){
   vector<double>                               I(numq);
 //Jacobian
   vector<Vector>                               deriv(numq*size);
-//vector for the real and imaginary parts of the spherical basis functions
-  vector<Vector2d>                             qRnm(p2*size);
-//vector for expansion factors of the scattering profile I(q)
-  vector<Vector2d>                             Bnm(p2);
-//vectors for the expansion coefficients of the derivatives of the spherical basis functions
-  vector<Vector2d>	                       a(3*p2);
 
 //creates a vector of atomic positions in polar coordinates
-  polar.resize(size);
+  vector<Vector> polar(size);
   for(unsigned i=rank;i<size;i+=stride) {
 //r
     polar[i][0]=sqrt(getPosition(i)[0]*getPosition(i)[0]+getPosition(i)[1]*getPosition(i)[1]+getPosition(i)[2]*getPosition(i)[2]);
@@ -252,7 +259,7 @@ void FSAXS::calculate(){
   }
 
 //as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
-
+vector<Vector2d>                             qRnm(p2*size);
 for(unsigned int i=rank;i<size;i+=stride) {
   for(int n=0;n<truncation;n+=1) {
     for(int m=0;m<(n+1);m++) {
@@ -268,16 +275,28 @@ for(unsigned int i=rank;i<size;i+=stride) {
   }
 
 //sum over qvalues
-  for (unsigned k=0; k<numq; k++) {
+  for (int k=numq-1; k>=0; k--) {
 //clear vectors for profile, derivatives and coefficients
     const unsigned kN  = k * size;
-    for(unsigned int j=0;j<p2;j++)   Bnm[j].zero();
-    for(unsigned int j=0;j<p2*3;j++) a[j].zero();
+
+//dynamically set the truncation according to the scattering wavenumber.
+    int trunc=truncation;
+    if(!fixedq)  {
+    double qa = maxdist*(q_list[k] + sqrt(q_list[k]));
+    trunc=(int)qa;
+    if(truncation<trunc) trunc=truncation;
+    if(trunc<15)         trunc=15;
+    }
+    double p22=trunc*trunc;
+    if(verbose) log<<trunc<<"\n";
+
 //double sum over the p^2 expansion terms
+    vector<Vector2d>                             Bnm(p22);
     for(unsigned int i=rank;i<size;i+=stride) {
-      for(int n=0;n<truncation;n+=1) {
+      double pq =polar[i][0]* q_list[k];
+      for(int n=trunc-1;n>=0;n-=1) {
 //the spherical bessel functions do not depend on the order and are therefore precomputed here
-        double bessel           = gsl_sf_bessel_jl(n,polar[i][0]* q_list[k]);
+        double bessel           = gsl_sf_bessel_jl(n,pq);
 //here conj(R(m,n))=R(-m,n) is used to decrease the terms in the sum over m by a factor of two
         for(int m=0;m<(n+1);m++) {
           int order             = m-n;
@@ -300,8 +319,9 @@ for(unsigned int i=rank;i<size;i+=stride) {
     }
 
 //calculate expansion coefficients for the derivatives
+  vector<Vector2d>	                         a(3*p22);
   for(unsigned int i=rank;i<size;i+=stride) {
-    for(int n=0;n<truncation-1;n++) {
+    for(int n=0;n<trunc-1;n++) {
       for(int m=0;m<(2*n)+1;m++) {
         int t        =3*(n * n + m);
         a[t]        += FF_value[k][i] * dXHarmonics(k,i,n,m,qRnm);
@@ -311,12 +331,12 @@ for(unsigned int i=rank;i<size;i+=stride) {
       }
     }
   if(!serial) {
-    comm.Sum(&Bnm[0][0],2*p2);
-    comm.Sum(&a[0][0],  6*p2);
+    comm.Sum(&Bnm[0][0],2*p22);
+    comm.Sum(&a[0][0],  6*p22);
   }
 
 //calculation of the scattering profile I of the kth scattering wavenumber q
-  for(int n=rank;n<truncation;n+=stride) {
+  for(int n=rank;n<trunc;n+=stride) {
     for(int m=0;m<(2*n)+1;m++) {
       int s          = n * n + m;
       I[k]          += Bnm[s][0] * Bnm[s][0] + Bnm[s][1] * Bnm[s][1];
@@ -328,8 +348,9 @@ for(unsigned int i=rank;i<size;i+=stride) {
 //vector of the derivatives of the expanded functions psi
       Vector             dPsi;
       int s               = p2 * i;
-      for(int n=0;n<truncation-1;n++) {
-        double bessel           = gsl_sf_bessel_jl(n,polar[i][0]* q_list[k]);
+      double pq           = polar[i][0]* q_list[k];
+      for(int n=trunc-1;n>=0;n--) {
+        double bessel           = gsl_sf_bessel_jl(n,pq);
         for(int m=0;m<(2*n)+1;m++) {
           int y           = n  * n + m  + s;
           int z           = 3*(n*n+m);
@@ -349,7 +370,6 @@ for(unsigned int i=rank;i<size;i+=stride) {
   }
 
 //output (box)derivatives and scattering profile
-//#pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for(unsigned k=0; k<numq; k++) {
   Tensor                               deriv_box;
     const unsigned kN     = k * size;
@@ -361,21 +381,6 @@ for(unsigned int i=rank;i<size;i+=stride) {
     I[k]                  = 4 * M_PI*I[k];
     setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
     val->set(I[k]);
-  }
-}
-
-
-//calculates spherical coordinates for all atoms in the system
-void FSAXS::getPolarCoords(){
-  const unsigned int size=getNumberOfAtoms();
-  polar.resize(size);
-  for(unsigned i=0;i<size;i++) {
-//r
-    polar[i][0]=sqrt(getPosition(i)[0]*getPosition(i)[0]+getPosition(i)[1]*getPosition(i)[1]+getPosition(i)[2]*getPosition(i)[2]);
-//cos(theta)
-    polar[i][1]=getPosition(i)[2]/polar[i][0];
-//phi
-    polar[i][2]=atan2(getPosition(i)[1],getPosition(i)[0]);
   }
 }
 

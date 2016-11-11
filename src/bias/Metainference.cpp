@@ -151,6 +151,7 @@ class Metainference : public Bias
   vector<double> variance_;
 
   // sigma_mean rescue params
+  double sigma_mean_correction_;
   double sm_mod_;
   double sm_mod_min_;
   double sm_mod_max_;
@@ -165,6 +166,7 @@ class Metainference : public Bias
   unsigned MCsteps_;
   unsigned MCstride_;
   long unsigned MCaccept_;
+  long unsigned MCacceptScale_;
   long unsigned MCtrial_;
   unsigned MCchunksize_;
 
@@ -172,6 +174,7 @@ class Metainference : public Bias
   Value*   valueScale;
   Value*   valueOffset;
   Value*   valueAccept;
+  Value*   valueAcceptScale;
   Value*   valueRSigmaMean;
   vector<Value*> valueSigma;
   vector<Value*> valueSigmaMean;
@@ -248,6 +251,7 @@ void Metainference::registerKeywords(Keywords& keys){
   keys.add("optional","SIGMA_MEAN_MOD_MIN","starting value for sm modifier");
   keys.add("optional","SIGMA_MEAN_MOD_MAX","starting value for sm modifier");
   keys.add("optional","DSIGMA_MEAN_MOD","step value for sm modifier");
+  keys.add("optional","SIGMA_MEAN_CORRECTION","sigma_mean correction modifier");
   keys.add("optional","MAX_FORCE","maximum allowable force");
   keys.add("optional","TEMP","the system temperature - this is only needed if code doesnt' pass the temperature to plumed");
   keys.add("optional","MC_STEPS","number of MC steps");
@@ -260,7 +264,8 @@ void Metainference::registerKeywords(Keywords& keys){
   keys.addOutputComponent("sigma",        "default",      "uncertainty parameter");
   keys.addOutputComponent("sigmaMean",    "default",      "uncertainty in the mean estimate");
   keys.addOutputComponent("rewSigmaMean", "default",      "sigma mean multiplier (give by scale, reweight and optimisation)");
-  keys.addOutputComponent("accept",       "default",      "MC acceptance");
+  keys.addOutputComponent("acceptSigma", "default",      "MC acceptance");
+  keys.addOutputComponent("acceptScale", "SCALEDATA",      "MC acceptance");
   keys.addOutputComponent("weight",       "REWEIGHT",     "weights of the weighted average");
   keys.addOutputComponent("MetaDf",       "REWEIGHT",     "force on metadynamics");
   keys.addOutputComponent("scale",        "SCALEDATA",    "scale parameter");
@@ -282,10 +287,12 @@ offset_min_(1),
 offset_max_(-1),
 Doffset_(-1),
 sm_mod_(1.),
+sigma_mean_correction_(1.),
 random(3),
 MCsteps_(1), 
 MCstride_(1), 
 MCaccept_(0), 
+MCacceptScale_(0), 
 MCtrial_(0),
 MCchunksize_(0),
 write_stride_(0),
@@ -356,13 +363,12 @@ atoms(plumed.getAtoms())
     else error("Unknown SCALE_PRIOR type!");
     parse("SCALE0",scale_);
     parse("DSCALE",Dscale_);
+    if(Dscale_<0.) error("DSCALE must be set when using SCALEDATA");
     if(scale_prior_==SC_GAUSS) {
       scale_mu_=scale_;
-      if(Dscale_<0.) error("DSCALE must be set when using SCALE_PRIOR=GAUSS");
     } else {
       parse("SCALE_MIN",scale_min_);
       parse("SCALE_MAX",scale_max_);
-      if(Dscale_<0) Dscale_ = 0.05*(scale_max_ - scale_min_);
       if(scale_max_<scale_min_) error("SCALE_MAX and SCALE_MIN must be set when using SCALE_PRIOR=FLAT");
     }
   } else {
@@ -459,6 +465,8 @@ atoms(plumed.getAtoms())
     }
     for(unsigned i=0;i<narg;i++) variance_[i] = sigma_mean_[0]*sigma_mean_[0]*static_cast<double>(nrep_);
   } 
+
+  parse("SIGMA_MEAN_CORRECTION", sigma_mean_correction_);
 
   // sigma mean optimisation
   if(do_optsigmamean_==2) {
@@ -601,9 +609,15 @@ atoms(plumed.getAtoms())
     valueOffset=getPntrToComponent("offset");
   }
 
-  addComponent("accept");
-  componentIsNotPeriodic("accept");
-  valueAccept=getPntrToComponent("accept");
+  if(dooffset_||doscale_) {
+    addComponent("acceptScale");
+    componentIsNotPeriodic("acceptScale");
+    valueAcceptScale=getPntrToComponent("acceptScale");
+  }
+
+  addComponent("acceptSigma");
+  componentIsNotPeriodic("acceptSigma");
+  valueAccept=getPntrToComponent("acceptSigma");
   
   addComponent("rewSigmaMean");
   componentIsNotPeriodic("rewSigmaMean");
@@ -722,7 +736,7 @@ double Metainference::getEnergySPE(const vector<double> &mean, const vector<doub
 double Metainference::getEnergyGJ(const vector<double> &mean, const vector<double> &sigma, 
                                   const double scale, const double offset, const double modifier)
 {
-  const double inv_s2 = 1./(sigma[0]*sigma[0] + modifier*modifier*scale*scale*sigma_mean_[0]*sigma_mean_[0]);
+  const double inv_s2 = 1./(scale*scale*sigma[0]*sigma[0] + modifier*modifier*scale*scale*sigma_mean_[0]*sigma_mean_[0]);
   const double inv_sss = 1./(sigma[0]*sigma[0] + modifier*modifier*sigma_mean_[0]*sigma_mean_[0]);
 
   double ene = 0.0;
@@ -736,7 +750,13 @@ double Metainference::getEnergyGJ(const vector<double> &mean, const vector<doubl
   }
   // add Jeffrey's prior in case one sigma for all data points + one normalisation per datapoint
   // scale doens't enter in the jeffrey, because we don't want the scale to be biased towards zero
-  ene += -0.5*std::log(inv_sss) - 0.5*static_cast<double>(narg)*std::log(scale*scale*inv_s2/(2.*M_PI));
+  ene += -0.5*std::log(1./inv_sss) - 0.5*static_cast<double>(narg)*std::log(scale*scale*inv_s2/(2.*M_PI));
+  if(doscale_) {
+    ene += -0.5*std::log(1./inv_sss);
+  }
+  if(dooffset_) {
+    ene += -0.5*std::log(1./inv_sss);
+  }
   return kbt_ * ene;
 }
 
@@ -754,14 +774,20 @@ double Metainference::getEnergyGJE(const vector<double> &mean, const vector<doub
     for(unsigned i=0;i<narg;++i){
       const double sigma2 = sigma[i] * sigma[i];
       const double sigma_mean2 = sigma_mean_[i] * sigma_mean_[i];
-      const double sss = sigma2 + mul_sm2*sigma_mean2;
+      const double sss = scale2*sigma2 + mul_sm2*sigma_mean2;
       const double ss = sigma2 + mu2*sigma_mean2;
       double dev = scale*mean[i]-parameters[i]+offset;
       // deviation + normalisation + jeffrey
-      // ene += 0.5*dev*dev/ss + 0.5*std::log(sss*2.*M_PI) + 0.5*std::log(ss);
+      // ene += 0.5*dev*dev/ss + 0.5*std::log(sss*2.*M_PI) - 0.5*std::log(2/ss);
       // scale doens't enter in the jeffrey, because we don't want the scale to be biased towards zero
       // this is equivalent to (but with less log to calculate)
-      ene += 0.5*dev*dev/ss + 0.5*std::log(2.*M_PI*sss*ss/scale2);
+      ene += 0.5*dev*dev/ss + 0.5*std::log(M_PI*sss*ss/scale2);
+      if(doscale_) {
+        ene += -0.5*std::log((offset-parameters[i])*(offset-parameters[i])/ss);
+      }
+      if(dooffset_) {
+        ene += 0.5*std::log(ss);
+      }
     }
   }
   return kbt_ * ene;
@@ -800,11 +826,12 @@ void Metainference::doMonteCarlo(const vector<double> &mean_, const double modif
   // cycle on MC steps 
   for(unsigned i=0;i<MCsteps_;++i){
  
+    MCtrial_++;
+
     // propose move for scale and/or offset
     double new_scale = scale_;
     double new_offset = offset_;
     if(doscale_||dooffset_) {
-      MCtrial_++;
       if(doscale_) {
         if(scale_prior_==SC_FLAT) {
           const double r1 = random[1].Gaussian();
@@ -871,7 +898,7 @@ void Metainference::doMonteCarlo(const vector<double> &mean_, const double modif
         old_energy = new_energy;
         scale_ = new_scale;
         offset_ = new_offset;
-        MCaccept_++;
+        MCacceptScale_++;
       // otherwise extract random number
       } else {
         double s = random[1].RandU01();
@@ -879,14 +906,12 @@ void Metainference::doMonteCarlo(const vector<double> &mean_, const double modif
           old_energy = new_energy;
           scale_ = new_scale;
           offset_ = new_offset;
-          MCaccept_++;
+          MCacceptScale_++;
         }
       }
     }
-  
-    // propose move for sigma
-    MCtrial_++;
 
+    // propose move for sigma
     vector<double> new_sigma(sigma_.size());
     new_sigma = sigma_;
 
@@ -969,6 +994,10 @@ void Metainference::doMonteCarlo(const vector<double> &mean_, const double modif
   valueAccept->set(accept);
   if(doscale_) valueScale->set(scale_);
   if(dooffset_) valueOffset->set(offset_);
+  if(doscale_||dooffset_) {
+    accept = static_cast<double>(MCacceptScale_) / static_cast<double>(MCtrial_);
+    valueAcceptScale->set(accept);
+  }
   for(unsigned i=0; i<sigma_.size(); i++) valueSigma[i]->set(sigma_[i]);
 }
 
@@ -1107,7 +1136,7 @@ double Metainference::getEnergyForceGJE(const vector<double> &mean, const double
 
   if(master) {
     for(unsigned i=0;i<sigma_.size(); ++i) {
-      const double ss = sigma_[i]*sigma_[i] + sm_m2*sigma_mean_[i]*sigma_mean_[i];
+      const double ss = scale_*scale_*sigma_[i]*sigma_[i] + sm_m2*sigma_mean_[i]*sigma_mean_[i];
       inv_s2[i] = 1.0/ss;
     }
     if(nrep_>1) multi_sim_comm.Sum(&inv_s2[0],sigma_.size());
@@ -1220,6 +1249,8 @@ void Metainference::calculate()
 
   // correct sigma_mean for the weighted average effect
   double sigma_mean_modifier = idof;
+  // rescale sigma_mean by a user supplied constant 
+  sigma_mean_modifier *= sigma_mean_correction_;
 
   /* MONTE CARLO */
   const long int step = getStep();

@@ -73,7 +73,6 @@ public:
   void                     calculateASF(const vector<AtomNumber> &atoms, vector<vector<long double> > &FF_tmp);
   void                     derivatives();
   virtual void             calculate();
-  void                     getPolarCoords();
   Vector2d dXHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &decRnm);
   Vector2d dYHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &decRnm);
   Vector2d dZHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vector2d> &decRnm);
@@ -98,7 +97,7 @@ void FSAXS::registerKeywords(Keywords& keys){
   keys.addFlag("ADDEXPVALUES",false,"Set to TRUE if you want to have fixed components with the experimental values.");
   keys.add("numbered","EXPINT","Add an experimental value for each q value.");
   keys.add("compulsory","SCEXP","1.0","SCALING value of the experimental data. Usefull to simplify the comparison.");
-  keys.add("compulsory","TRUNCATION","15","Truncation number p for the expansion in spherical hamonics.");
+  keys.add("compulsory","TRUNCATION","50","Truncation number p for the expansion in spherical hamonics.");
 }
 //constructor
 FSAXS::FSAXS(const ActionOptions&ao):
@@ -123,9 +122,10 @@ serial(false)
   parse("NUMQ",numq);
   if(numq==0) error("NUMQ must be set");  
 //read in a truncation value
-  truncation= 15;
+  truncation= 0;
   parse("TRUNCATION",truncation);
   truncation+=2;
+  if(truncation==0) truncation=50;
   p2   = truncation*truncation;
 //read experimental scaling factor
   double scexp = 0;
@@ -273,7 +273,8 @@ for(unsigned int i=rank;i<size;i+=stride) {
       }
     }
   }
-
+//0 if Middleman is cheaper, 1 if direct calculation is cheaper
+  vector<bool> algorithm(numq); 
 //sum over qvalues
   for (int k=numq-1; k>=0; k--) {
 //clear vectors for profile, derivatives and coefficients
@@ -289,7 +290,10 @@ for(unsigned int i=rank;i<size;i+=stride) {
     }
     double p22=trunc*trunc;
     if(verbose) log<<trunc<<"\n";
-
+    //if(unsigned(p22*1.15)>size) algorithm[k]=1;
+    if(trunc>truncation/2) algorithm[k]=1;
+   if(!algorithm[k]) {
+     //log<<algorithm[k]<<" Middleman\n";
 //double sum over the p^2 expansion terms
     vector<Vector2d>                             Bnm(p22);
     for(unsigned int i=rank;i<size;i+=stride) {
@@ -362,8 +366,33 @@ for(unsigned int i=rank;i<size;i+=stride) {
       }
       deriv[kN+i]        += FF_value[k][i] * dPsi;
     }
+  }
+//calculation via direct Debye summation
+      if(algorithm[k])  {
+      //log<<algorithm[k]<<" Direct calculation\n";
+      for (unsigned i=rank; i<size-1; i+=stride) {
+        const double FF=2.*FF_value[k][i];
+        const Vector posi=getPosition(i);
+        Vector dsum;
+        for (unsigned j=i+1; j<size ; j++) {
+          const Vector c_distances = delta(posi,getPosition(j));
+          const double m_distances = c_distances.modulo();
+          const double qdist       = q_list[k]*m_distances;
+          const double FFF = FF*FF_value[k][j];
+          const double tsq = FFF*sin(qdist)/qdist;
+          const double tcq = FFF*cos(qdist);
+          const double tmp = (tcq-tsq)/(m_distances*m_distances);
+          const Vector dd  = c_distances*tmp;
+          dsum         += dd;
+          deriv[kN+j] += dd;
+          I[k]       += tsq;
+        }
+        deriv[kN+i] -= dsum;
+      }
+    }
 //end of the k loop
   }
+
   if(!serial) {
     comm.Sum(&I[0],               numq);
     comm.Sum(&deriv[0][0],        3*deriv.size());
@@ -371,15 +400,23 @@ for(unsigned int i=rank;i<size;i+=stride) {
 
 //output (box)derivatives and scattering profile
   for(unsigned k=0; k<numq; k++) {
+  log<<algorithm[k];
   Tensor                               deriv_box;
     const unsigned kN     = k * size;
     Value* val            = getPntrToComponent(k);
     for(unsigned i=0; i<size; i++) {
-      setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
+      if(algorithm[k]==1) setAtomsDerivatives(val, i, deriv[kN+i]);
+      else                setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
       deriv_box += Tensor(getPosition(i),deriv[kN+i]);
     }
-    I[k]                  = 4 * M_PI*I[k];
-    setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
+    if(algorithm[k]==1) { 
+      I[k]+=FF_rank[k];
+      setBoxDerivatives(val, -deriv_box);
+    }
+    else {
+      I[k]                  = 4 * M_PI*I[k];
+      setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
+    }
     val->set(I[k]);
   }
 }

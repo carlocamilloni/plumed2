@@ -180,7 +180,7 @@ Calculate EEF1-SB solvation free energy
 
                             const double rij_vdwr_diff = rij - vdw_radius;
                             const double expo = exp(-inv_lambda2 * rij_vdwr_diff * rij_vdwr_diff);
-                            const double fact = -delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
+                            const double fact = delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
                             const double deriv = inv_rij * fact * (inv_rij + rij_vdwr_diff * inv_lambda2);
 
                             // This is needed for correct box derivs
@@ -203,7 +203,7 @@ Calculate EEF1-SB solvation free energy
 
                             const double rij_vdwr_diff = rij - vdw_radius;
                             const double expo = exp(-inv_lambda2 * rij_vdwr_diff * rij_vdwr_diff);
-                            const double fact = -delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
+                            const double fact = delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
                             const double deriv = inv_rij * fact * (inv_rij + rij_vdwr_diff * inv_lambda2);
 
                             #pragma omp critical(deriv)

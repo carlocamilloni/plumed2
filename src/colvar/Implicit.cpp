@@ -115,6 +115,7 @@ Calculate EEF1-SB solvation free energy
 
         void Implicit::update_neighb() {
             const double c2 = cutoff*cutoff;
+            const double lower_c2 = 0.24 * 0.24;
             const unsigned size=getNumberOfAtoms();
             const unsigned nt = OpenMP::getGoodNumThreads(nl);
             #pragma omp parallel num_threads(nt)
@@ -130,7 +131,7 @@ Calculate EEF1-SB solvation free energy
                     // Loop through neighboring atoms, add the ones below cutoff
                     for (unsigned j=i+1; j<size; ++j) {
                         const double d2 = delta(posi, getPosition(j)).modulo2();
-                        if (d2 < c2 && i != j) {
+                        if (d2 < c2 && d2 > lower_c2 && i != j) {
                             nl[i].push_back(j);
                         }
                     }
@@ -186,7 +187,7 @@ Calculate EEF1-SB solvation free energy
                             // This is needed for correct box derivs
                             #pragma omp critical(deriv)
                             {
-                                fedensity += -fact;
+                                fedensity += fact;
                                 fedensity_deriv[i] += deriv * dist;
                                 fedensity_deriv[j] -= deriv * dist;
                             }
@@ -208,7 +209,7 @@ Calculate EEF1-SB solvation free energy
 
                             #pragma omp critical(deriv)
                             {
-                                fedensity += -fact;
+                                fedensity += fact;
                                 fedensity_deriv[i] += deriv * dist;
                                 fedensity_deriv[j] -= deriv * dist;
                             }
@@ -225,8 +226,8 @@ Calculate EEF1-SB solvation free energy
             {
                 #pragma omp for reduction(tensor_sum:deriv_box)
                 for (unsigned i=0; i<size; ++i) {
-                    setAtomsDerivatives(i, fedensity_deriv[i]);
-                    deriv_box += Tensor(getPosition(i), fedensity_deriv[i]);
+                    setAtomsDerivatives(i, -fedensity_deriv[i]);
+                    deriv_box += Tensor(getPosition(i), -fedensity_deriv[i]);
                 }
             }
 

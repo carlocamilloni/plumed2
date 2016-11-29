@@ -131,7 +131,7 @@ Calculate EEF1-SB solvation free energy
                     // Loop through neighboring atoms, add the ones below cutoff
                     for (unsigned j=i+1; j<size; ++j) {
                         const double d2 = delta(posi, getPosition(j)).modulo2();
-                        if(d2 < lower_c2 && j<i+14)) continue; // crude approximation for i-i+1/2 interactions
+                        if(d2 < lower_c2 && j<i+14) continue; // crude approximation for i-i+1/2 interactions
                         if (d2 < c2 ) {
                             nl[i].push_back(j);
                         }

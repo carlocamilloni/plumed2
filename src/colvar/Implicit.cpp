@@ -769,7 +769,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 0.000;
                         parameter[i][4] = 4.184 * 0.0;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CD") {
                         parameter[i][0] = 0.001 * 14.720;
                         parameter[i][1] = 4.184 * 0.000;
@@ -777,7 +777,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 0.000;
                         parameter[i][4] = 4.184 * 0.0;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CT1") {
                         parameter[i][0] = 0.001 * 11.507;
                         parameter[i][1] = 4.184 * -0.187;
@@ -785,7 +785,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 0.876;
                         parameter[i][4] = 4.184 * 0.0;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CT2") {
                         parameter[i][0] = 0.001 * 18.850;
                         parameter[i][1] = 4.184 * 0.372;
@@ -793,7 +793,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.610;
                         parameter[i][4] = 4.184 * 18.6;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CT2A") {
                         parameter[i][0] = 0.001 * 18.666;
                         parameter[i][1] = 4.184 * 0.372;
@@ -801,7 +801,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.610;
                         parameter[i][4] = 4.184 * 18.6;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CT3") {
                         parameter[i][0] = 0.001 * 27.941;
                         parameter[i][1] = 4.184 * 1.089;
@@ -809,7 +809,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -1.779;
                         parameter[i][4] = 4.184 * 35.6;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.204;
                     } else if (Atype == "CPH1") {
                         parameter[i][0] = 0.001 * 5.275;
                         parameter[i][1] = 4.184 * 0.057;
@@ -817,7 +817,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.973;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.18;
                     } else if (Atype == "CPH2") {
                         parameter[i][0] = 0.001 * 11.796;
                         parameter[i][1] = 4.184 * 0.057;
@@ -825,7 +825,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.973;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.18;
                     } else if (Atype == "CPT") {
                         parameter[i][0] = 0.001 * 4.669;
                         parameter[i][1] = 4.184 * -0.890;
@@ -833,7 +833,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 2.220;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.186;
                     } else if (Atype == "CY") {
                         parameter[i][0] = 0.001 * 10.507;
                         parameter[i][1] = 4.184 * -0.890;
@@ -841,7 +841,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 2.220;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.199;
                     } else if (Atype == "CP1") {
                         parameter[i][0] = 0.001 * 25.458;
                         parameter[i][1] = 4.184 * -0.187;
@@ -849,7 +849,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 0.876;
                         parameter[i][4] = 4.184 * 0.0;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.227;
                     } else if (Atype == "CP2") {
                         parameter[i][0] = 0.001 * 19.880;
                         parameter[i][1] = 4.184 * 0.372;
@@ -857,7 +857,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.610;
                         parameter[i][4] = 4.184 * 18.6;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.217;
                     } else if (Atype == "CP3") {
                         parameter[i][0] = 0.001 * 26.731;
                         parameter[i][1] = 4.184 * 0.372;
@@ -865,7 +865,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.610;
                         parameter[i][4] = 4.184 * 18.6;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.217;
                     } else if (Atype == "CC") {
                         parameter[i][0] = 0.001 * 16.539;
                         parameter[i][1] = 4.184 * 0.000;
@@ -873,7 +873,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * 0.000;
                         parameter[i][4] = 4.184 * 0.0;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "CAI") {
                         parameter[i][0] = 0.001 * 18.249;
                         parameter[i][1] = 4.184 * 0.057;
@@ -881,7 +881,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.973;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.199;
                     } else if (Atype == "CA") {
                         parameter[i][0] = 0.001 * 18.249;
                         parameter[i][1] = 4.184 * 0.057;
@@ -889,7 +889,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -0.973;
                         parameter[i][4] = 4.184 * 6.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.17;
+                        parameter[i][6] = 0.199;
                     } else if (Atype == "N") {
                         parameter[i][0] = 0.001 * 0.000;
                         parameter[i][1] = 4.184 * -1.000;
@@ -897,7 +897,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -1.250;
                         parameter[i][4] = 4.184 * 8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NR1") {
                         parameter[i][0] = 0.001 * 15.273;
                         parameter[i][1] = 4.184 * -5.950;
@@ -905,7 +905,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.059;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NR2") {
                         parameter[i][0] = 0.001 * 15.111;
                         parameter[i][1] = 4.184 * -3.820;
@@ -913,7 +913,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -4.654;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NR3") {
                         parameter[i][0] = 0.001 * 15.071;
                         parameter[i][1] = 4.184 * -5.950;
@@ -921,7 +921,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.059;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NH1") {
                         parameter[i][0] = 0.001 * 10.197;
                         parameter[i][1] = 4.184 * -5.950;
@@ -929,7 +929,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.059;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NH2") {
                         parameter[i][0] = 0.001 * 18.182;
                         parameter[i][1] = 4.184 * -5.950;
@@ -937,7 +937,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.059;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NH3") {
                         parameter[i][0] = 0.001 * 18.817;
                         parameter[i][1] = 4.184 * -20.000;
@@ -945,7 +945,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -25.000;
                         parameter[i][4] = 4.184 * -18.0;
                         parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NC2") {
                         parameter[i][0] = 0.001 * 18.215;
                         parameter[i][1] = 4.184 * -10.000;
@@ -953,7 +953,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -12.000;
                         parameter[i][4] = 4.184 * -7.0;
                         parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NY") {
                         parameter[i][0] = 0.001 * 12.001;
                         parameter[i][1] = 4.184 * -5.950;
@@ -961,7 +961,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.059;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "NP") {
                         parameter[i][0] = 0.001 * 4.993;
                         parameter[i][1] = 4.184 * -20.000;
@@ -969,7 +969,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -25.000;
                         parameter[i][4] = 4.184 * -18.0;
                         parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.155;
+                        parameter[i][6] = 0.185;
                     } else if (Atype == "O") {
                         parameter[i][0] = 0.001 * 11.772;
                         parameter[i][1] = 4.184 * -5.330;
@@ -977,7 +977,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -5.787;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.152;
+                        parameter[i][6] = 0.170;
                     } else if (Atype == "OB") {
                         parameter[i][0] = 0.001 * 11.694;
                         parameter[i][1] = 4.184 * -5.330;
@@ -985,7 +985,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -5.787;
                         parameter[i][4] = 4.184 * -8.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.152;
+                        parameter[i][6] = 0.170;
                     } else if (Atype == "OC") {
                         parameter[i][0] = 0.001 * 12.003;
                         parameter[i][1] = 4.184 * -10.000;
@@ -993,7 +993,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -12.000;
                         parameter[i][4] = 4.184 * -9.4;
                         parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.152;
+                        parameter[i][6] = 0.170;
                     } else if (Atype == "OH1") {
                         parameter[i][0] = 0.001 * 15.528;
                         parameter[i][1] = 4.184 * -5.920;
@@ -1001,7 +1001,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -9.264;
                         parameter[i][4] = 4.184 * -11.2;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.152;
+                        parameter[i][6] = 0.177;
                     } else if (Atype == "OS") {
                         parameter[i][0] = 0.001 * 6.774;
                         parameter[i][1] = 4.184 * -2.900;
@@ -1009,7 +1009,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -3.150;
                         parameter[i][4] = 4.184 * -4.8;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.152;
+                        parameter[i][6] = 0.177;
                     } else if (Atype == "S") {
                         parameter[i][0] = 0.001 * 20.703;
                         parameter[i][1] = 4.184 * -3.240;
@@ -1017,7 +1017,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -4.475;
                         parameter[i][4] = 4.184 * -39.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.18;
+                        parameter[i][6] = 0.20;
                     } else if (Atype == "SM") {
                         parameter[i][0] = 0.001 * 21.306;
                         parameter[i][1] = 4.184 * -3.240;
@@ -1025,7 +1025,7 @@ Calculate EEF1-SB solvation free energy
                         parameter[i][3] = 4.184 * -4.475;
                         parameter[i][4] = 4.184 * -39.9;
                         parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.18;
+                        parameter[i][6] = 0.197;
                     } else {
                         error("Invalid atom type!\n");
                     }

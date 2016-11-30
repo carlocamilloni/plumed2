@@ -54,6 +54,7 @@ Calculate EEF1-SB solvation free energy
         class Implicit : public Colvar {
             private:
                 bool pbc;
+                bool tcorr;
                 double cutoff;
                 unsigned stride;
                 unsigned nl_update;
@@ -78,11 +79,13 @@ Calculate EEF1-SB solvation free energy
             keys.add("atoms", "ATOMS", "The atoms to be included in the calculation, e.g. the whole protein.");
             keys.add("compulsory", "NL_CUTOFF", "The cutoff used when calculating pairwise interactions.");
             keys.add("compulsory", "NL_STRIDE", "The frequency with which the neighbourlist is updated.");
+            keys.addFlag("TEMP_CORRECTION", false, "Correct free energy of solvation constants for temperatures different from 298.15 K");
         }
 
         Implicit::Implicit(const ActionOptions&ao):
             PLUMED_COLVAR_INIT(ao),
             pbc(true),
+            tcorr(false),
             cutoff(1.0),
             stride(10),
             nl_update(0)
@@ -90,6 +93,8 @@ Calculate EEF1-SB solvation free energy
             vector<AtomNumber> atoms;
             parseAtomList("ATOMS", atoms);
             const unsigned size = atoms.size();
+
+            parseFlag("TEMP_CORRECTION", tcorr);
 
             parse("NL_CUTOFF", cutoff);
             parse("NL_STRIDE", stride);
@@ -1031,15 +1036,16 @@ Calculate EEF1-SB solvation free energy
                     }
 
                     // Temperature correction
-                    /* if (!(parameter[i][1] > 0.0)) { */
-                    /*     const double t0 = 298.15; */
-                    /*     const double delta_g_ref_t0 = parameter[i][1]; */
-                    /*     const double delta_h_ref_t0 = parameter[i][3]; */
-                    /*     const double delta_cp = parameter[i][4]; */
-                    /*     const double delta_s_ref_t0 = (delta_h_ref_t0 - delta_g_ref_t0) / t0; */
-                    /*     const double t = getKbT() / getKBoltzmann(); */
-                    /*     parameter[i][1] = delta_g_ref_t0 - delta_s_ref_t0 * (t - t0) - delta_cp * t * std::log(t / t0) + delta_cp * (t - t0); */
-                    /* } */
+                    if (tcorr && parameter[i][1] > 0.0) {
+                        const double t0 = 298.15;
+                        const double delta_g_ref_t0 = parameter[i][1];
+                        const double delta_h_ref_t0 = parameter[i][3];
+                        const double delta_cp = parameter[i][4];
+                        const double delta_s_ref_t0 = (delta_h_ref_t0 - delta_g_ref_t0) / t0;
+                        const double t = plumed.getAtoms().getKbT() / plumed.getAtoms().getKBoltzmann();
+                        parameter[i][1] -= delta_s_ref_t0 * (t - t0) - delta_cp * t * std::log(t / t0) + delta_cp * (t - t0);
+                        parameter[i][2] *= parameter[i][1] / delta_g_ref_t0;
+                    }
                 }
             } else {
                 error("MOLINFO DATA not found\n");

@@ -1043,8 +1043,8 @@ double Metainference::getEnergyForceSP(const vector<double> &mean, const double 
   }
 
   if(do_reweight) {
-    setOutputForce(narg, -w_tmp);
-    getPntrToComponent("MetaDf")->set(w_tmp);
+    setOutputForce(narg, -kbt_*w_tmp);
+    getPntrToComponent("MetaDf")->set(kbt_*w_tmp);
     getPntrToComponent("weight")->set(fact);
   }
 
@@ -1088,8 +1088,8 @@ double Metainference::getEnergyForceSPE(const vector<double> &mean, const double
   }
 
   if(do_reweight) {
-    setOutputForce(narg, -w_tmp);
-    getPntrToComponent("MetaDf")->set(w_tmp);
+    setOutputForce(narg, -kbt_*w_tmp);
+    getPntrToComponent("MetaDf")->set(kbt_*w_tmp);
     getPntrToComponent("weight")->set(fact);
   }
 
@@ -1120,8 +1120,8 @@ double Metainference::getEnergyForceGJ(const vector<double> &mean, const double 
     }
   }
   if(do_reweight) {
-    setOutputForce(narg, -w_tmp);
-    getPntrToComponent("MetaDf")->set(w_tmp);
+    setOutputForce(narg, -kbt_*w_tmp);
+    getPntrToComponent("MetaDf")->set(kbt_*w_tmp);
     getPntrToComponent("weight")->set(fact);
   }
 
@@ -1160,8 +1160,8 @@ double Metainference::getEnergyForceGJE(const vector<double> &mean, const double
   }
 
   if(do_reweight) {
-    setOutputForce(narg, -w_tmp);
-    getPntrToComponent("MetaDf")->set(w_tmp);
+    setOutputForce(narg, -kbt_*w_tmp);
+    getPntrToComponent("MetaDf")->set(kbt_*w_tmp);
     getPntrToComponent("weight")->set(fact);
   }
 

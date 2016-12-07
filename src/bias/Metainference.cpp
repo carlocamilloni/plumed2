@@ -720,8 +720,8 @@ double Metainference::getEnergySPE(const vector<double> &mean, const vector<doub
       const double dev = scale*mean[i]-parameters[i]+offset; 
       const double a2  = 0.5*dev*dev + ss2;
       ene += std::log(2.0*a2/(1.0-exp(-a2/sm2)));
-      if(doscale_)  ene += std::log(sss);
-      if(dooffset_) ene += std::log(sss);
+      if(doscale_)  ene += 0.5*std::log(sss);
+      if(dooffset_) ene += 0.5*std::log(sss);
     }
   }
   ene += static_cast<double>(narg)*0.5*std::log(0.5*M_PI*M_PI/scale2); 

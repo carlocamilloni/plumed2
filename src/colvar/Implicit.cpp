@@ -55,7 +55,7 @@ Calculate EEF1-SB solvation free energy
             private:
                 bool pbc;
                 bool tcorr;
-                double cutoff;
+                double buffer;
                 unsigned stride;
                 unsigned nl_update;
                 vector<vector<unsigned> > nl;
@@ -77,7 +77,7 @@ Calculate EEF1-SB solvation free energy
             componentsAreNotOptional(keys);
             useCustomisableComponents(keys);
             keys.add("atoms", "ATOMS", "The atoms to be included in the calculation, e.g. the whole protein.");
-            keys.add("compulsory", "NL_CUTOFF", "The cutoff used when calculating pairwise interactions.");
+            keys.add("compulsory", "NL_BUFFER", "The buffer to the intrinsic cutoff used when calculating pairwise interactions.");
             keys.add("compulsory", "NL_STRIDE", "The frequency with which the neighbourlist is updated.");
             keys.addFlag("TEMP_CORRECTION", false, "Correct free energy of solvation constants for temperatures different from 298.15 K");
         }
@@ -86,7 +86,7 @@ Calculate EEF1-SB solvation free energy
             PLUMED_COLVAR_INIT(ao),
             pbc(true),
             tcorr(false),
-            cutoff(1.0),
+            buffer(0.1),
             stride(10),
             nl_update(0)
         {
@@ -96,7 +96,7 @@ Calculate EEF1-SB solvation free energy
 
             parseFlag("TEMP_CORRECTION", tcorr);
 
-            parse("NL_CUTOFF", cutoff);
+            parse("NL_BUFFER", buffer);
             parse("NL_STRIDE", stride);
 
             bool nopbc = !pbc;
@@ -119,8 +119,7 @@ Calculate EEF1-SB solvation free energy
         }
 
         void Implicit::update_neighb() {
-            const double c2 = cutoff*cutoff;
-            const double lower_c2 = 0.24 * 0.24;
+            const double lower_c2 = 0.24 * 0.24; // this is the cut-off for bonded atoms
             const unsigned size=getNumberOfAtoms();
             const unsigned nt = OpenMP::getGoodNumThreads(nl);
             #pragma omp parallel num_threads(nt)
@@ -137,6 +136,9 @@ Calculate EEF1-SB solvation free energy
                     for (unsigned j=i+1; j<size; ++j) {
                         const double d2 = delta(posi, getPosition(j)).modulo2();
                         if(d2 < lower_c2 && j<i+14) continue; // crude approximation for i-i+1/2 interactions
+                        double mlambda =  parameter[i][5];
+                        if (parameter[j][5] > mlambda) mlambda = parameter[j][5];
+                        double c2 = (3.*mlambda + buffer)*(3.*mlambda + buffer);
                         if (d2 < c2 ) {
                             nl[i].push_back(j);
                         }
@@ -170,13 +172,11 @@ Calculate EEF1-SB solvation free energy
                         const unsigned j = nl[i][i_nl];
                         const Vector dist = delta(posi, getPosition(j));
                         const double rij = dist.modulo();
-                        double mlambda =  parameter[i][5];
-                        if (parameter[j][5] > mlambda) mlambda = parameter[j][5];
-                        if (rij > 3. * mlambda) continue;
                         const double inv_rij = 1.0 / rij;
                         const double inv_rij2 = inv_rij * inv_rij;
-                        
+
                         // i-j interaction
+                        if(rij < 3.*parameter[i][5])
                         {
                             const double delta_g_free = parameter[i][2];
                             const double lambda = parameter[i][5];
@@ -200,6 +200,7 @@ Calculate EEF1-SB solvation free energy
                         }
 
                         // j-i interaction
+                        if(rij < 3.*parameter[j][5])
                         {
                             const double delta_g_free = parameter[j][2];
                             const double lambda = parameter[j][5];

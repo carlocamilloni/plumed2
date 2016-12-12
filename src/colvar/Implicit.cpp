@@ -174,8 +174,9 @@ Calculate EEF1-SB solvation free energy
                         const double rij = dist.modulo();
                         const double inv_rij = 1.0 / rij;
                         const double inv_rij2 = inv_rij * inv_rij;
-                        if(rij < 3.*parameter[i][5])
+
                         // i-j interaction
+                        if(rij < 3.*parameter[i][5])
                         {
                             const double delta_g_free = parameter[i][2];
                             const double lambda = parameter[i][5];

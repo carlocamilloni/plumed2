@@ -277,7 +277,7 @@ void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long
           parameter[i].push_back(1.72922);
           parameter[i].push_back(-0.33799);
         } else if(Aname=="SC1"){
-          parameter[i].push_back(-2.797);
+          parameter[i].push_back(-2.796);
           parameter[i].push_back(0.472403);
           parameter[i].push_back(8.07424);
           parameter[i].push_back(4.37299);

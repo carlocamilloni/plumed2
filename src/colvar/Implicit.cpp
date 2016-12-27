@@ -40,7 +40,37 @@ namespace PLMD {
 //+PLUMEDOC COLVAR IMPLICIT
 /*
 
-Calculate EEF1-SB solvation free energy
+Calculate EEF1-SB solvation free energy for a group of atoms.
+
+EEF1-SB is a solvent-accessible surface area based model, where the free energy of solvation is computed using a pairwise interaction term for non-hydrogen atoms:
+\f[
+    \Delta G^\mathrm{solv}_i = \Delta G^\mathrm{ref}_i - \sum_{j \neq i} f_i(r_{ij}) V_j
+\f]
+where \f$\Delta G^\mathrm{solv}_i\f$ is the free energy of solvation, \f$\Delta G^\mathrm{ref}_i\f$ is the reference solvation free energy, \f$V_j\f$ is the volume of atom \f$j\f$ and
+\f[
+    f_i(r) 4\pi r^2 = \frac{2}{\sqrt{\pi}} \frac{\Delta G^\mathrm{free}_i}{\lambda_i} \exp\left\{ - \frac{(r-R_i)^2}{\lambda^2_i}\right\}
+\f]
+where \f$\Delta G^\mathrm{free}_i\f$ is the solvation free energy of the isolated group, \f$\lambda_i\f$ is the correlation length equal to the width of the first solvation shell and \f$R_i\f$ is the van der Waals radius of atom \f$i\f$.
+
+The output from this collective variable, the free energy of solvation, can be used with the \ref BIASVALUE keyword to provide implicit solvation to a system. All parameters are designed to be used with a modified CHARMM36 force field. It takes only non-hydrogen atoms as input, these can be conveniently specified using the \ref GROUP action with the NDX_GROUP parameter. To speed up the calculation, IMPLICIT internally uses a neighbourlist with a cutoff dependent on the type of atom (maximum of 1.95 nm). This cutoff can be extended further by using the NL_BUFFER keyword.
+
+\par Examples
+\verbatim
+MOLINFO MOLTYPE=protein STRUCTURE=peptide.pdb
+WHOLEMOLECULES ENTITY0=1-111
+
+# This allows us to select only non-hydrogen atoms
+protein-h: GROUP NDX_FILE=index.ndx NDX_GROUP=Protein-H
+
+# We extend the cutoff by 0.2 nm and update the neighbourlist every 10 steps
+solv: IMPLICIT ATOMS=protein-h NL_STRIDE=10 NL_BUFFER=0.2
+
+# Here we actually add our calculated energy back to the potential
+bias: BIASVALUE ARG=solv
+
+PRINT ARG=solv FILE=SOLV
+\endverbatim
+(see also \ref PRINT, \ref GROUP, \ref MOLINFO, \ref WHOLEMOLECULES)
 
 */
 //+ENDPLUMEDOC
@@ -99,6 +129,10 @@ Calculate EEF1-SB solvation free energy
             pbc = !nopbc;
 
             checkRead();
+
+            log << "  Bibliography " << plumed.cite("Bottaro S, Lindorff-Larsen K, Best R, J. Chem. Theory Comput. 9, 5641 (2013)")
+                                     << plumed.cite("Lazaridis T, Karplus M, Proteins Struct. Funct. Genet. 35, 133 (1999)"); log << "\n";
+
 
             nl.resize(size);
             parameter.resize(size);

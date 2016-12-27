@@ -20,15 +20,6 @@
    along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 
-// TODO:
-// delta_g_free temperature correction   [x]
-// try constant vdw_radius approximation [ ]
-// dihedral correction                   [x]
-// distance dependent dielectric         [x]
-// neutralize ionic sidechains           [x]
-// implement neighborlist                [x]
-// cutoff distance                       [x]
-
 #include "Colvar.h"
 #include "ActionRegister.h"
 #include "core/ActionSet.h"
@@ -37,6 +28,9 @@
 #include "tools/OpenMP.h"
 
 #define INV_PI_SQRT_PI 0.179587122
+#define KCAL_TO_KJ 4.184
+#define ANG_TO_NM 0.1
+#define ANG3_TO_NM3 0.001
 
 using namespace std;
 
@@ -61,7 +55,9 @@ Calculate EEF1-SB solvation free energy
                 vector<vector<unsigned> > nl;
                 vector<vector<double> > parameter;
                 map<string, map<string, string> > typemap;
+                map<string, vector<double> > valuemap;
                 void setupTypeMap();
+
             public:
                 static void registerKeywords(Keywords& keys);
                 explicit Implicit(const ActionOptions&);
@@ -95,7 +91,6 @@ Calculate EEF1-SB solvation free energy
             const unsigned size = atoms.size();
 
             parseFlag("TEMP_CORRECTION", tcorr);
-
             parse("NL_BUFFER", buffer);
             parse("NL_STRIDE", stride);
 
@@ -106,11 +101,7 @@ Calculate EEF1-SB solvation free energy
             checkRead();
 
             nl.resize(size);
-
             parameter.resize(size);
-            for (unsigned i=0; i<size; ++i) {
-                parameter[i].resize(8, 0.0);
-            }
             setupConstants(atoms, parameter);
 
             addValueWithDerivatives();
@@ -120,7 +111,7 @@ Calculate EEF1-SB solvation free energy
 
         void Implicit::update_neighb() {
             const double lower_c2 = 0.24 * 0.24; // this is the cut-off for bonded atoms
-            const unsigned size=getNumberOfAtoms();
+            const unsigned size = getNumberOfAtoms();
             const unsigned nt = OpenMP::getGoodNumThreads(nl);
             #pragma omp parallel num_threads(nt)
             {
@@ -135,10 +126,19 @@ Calculate EEF1-SB solvation free energy
                     // Loop through neighboring atoms, add the ones below cutoff
                     for (unsigned j=i+1; j<size; ++j) {
                         const double d2 = delta(posi, getPosition(j)).modulo2();
-                        if(d2 < lower_c2 && j<i+14) continue; // crude approximation for i-i+1/2 interactions
-                        double mlambda =  parameter[i][5];
-                        if (parameter[j][5] > mlambda) mlambda = parameter[j][5];
-                        double c2 = (3.*mlambda + buffer)*(3.*mlambda + buffer);
+                        if (d2 < lower_c2 && j < i+14) {
+                            // crude approximation for i-i+1/2 interactions,
+                            // we want to exclude atoms separated by less than three bonds
+                            continue;
+                        }
+
+                        double mlambda = parameter[i][5];
+                        if (parameter[j][5] > mlambda) {
+                            // We choose the maximum lambda value and use a more conservative cutoff
+                            mlambda = parameter[j][5];
+                        }
+
+                        double c2 = (3. * mlambda + buffer) * (3. * mlambda + buffer);
                         if (d2 < c2 ) {
                             nl[i].push_back(j);
                         }
@@ -245,6 +245,86 @@ Calculate EEF1-SB solvation free energy
             ++nl_update;
             if (nl_update == stride) {
                 nl_update = 0;
+            }
+        }
+
+        void Implicit::setupConstants(const vector<AtomNumber> &atoms, vector<vector<double> > &parameter) {
+            setupTypeMap();
+            vector<SetupMolInfo*> moldat = plumed.getActionSet().select<SetupMolInfo*>();
+            if (moldat.size() == 1) {
+                log << "  MOLINFO DATA found, using proper atom names\n";
+                for(unsigned i=0; i<atoms.size(); ++i) {
+
+                    // Get atom and residue names
+                    string Aname = moldat[0]->getAtomName(atoms[i]);
+                    string Rname = moldat[0]->getResidueName(atoms[i]);
+                    string Atype = typemap[Rname][Aname];
+
+                    // Check for terminal COOH or COO- (different atomtypes & parameters!)
+                    if (moldat[0]->getAtomName(atoms[i]) == "OT1") {
+                        // We create a temporary AtomNumber object to access future atoms
+                        unsigned ai = atoms[i].index();
+                        AtomNumber tmp_an;
+                        tmp_an.setIndex(ai + 2);
+                        if (moldat[0]->getAtomName(tmp_an) == "HT2") {
+                            // COOH
+                            Atype = "OB";
+                        } else {
+                            // COO-
+                            Atype = "OC";
+                        }
+                    }
+                    if (moldat[0]->getAtomName(atoms[i]) == "OT2") {
+                        unsigned ai = atoms[i].index();
+                        AtomNumber tmp_an;
+                        tmp_an.setIndex(ai + 1);
+                        if (moldat[0]->getAtomName(tmp_an) == "HT2") {
+                            // COOH
+                            Atype = "OH1";
+                        } else {
+                            // COO-
+                            Atype = "OC";
+                        }
+                    }
+
+                    // Check for H-atoms
+                    char type;
+                    char first = Aname.at(0);
+
+                    // GOLDEN RULE: type is first letter, if not a number
+                    if (!isdigit(first)){
+                        type = first;
+                        // otherwise is the second
+                    } else {
+                        type = Aname.at(1);
+                    }
+
+                    if (type == 'H') {
+                        error("EEF1-SB does not allow the use of hydrogen atoms!\n");
+                    }
+
+                    // Lookup atomtype in table or throw exception if its not there
+                    try {
+                        parameter[i] = valuemap.at(Atype);
+                    } catch (exception &e) {
+                        log << "Type: " << Atype << "  Name: " << Aname << "  Residue: " << Rname << "\n";
+                        error("Invalid atom type!\n");
+                    }
+
+                    // Temperature correction
+                    if (tcorr && parameter[i][1] > 0.0) {
+                        const double t0 = 298.15;
+                        const double delta_g_ref_t0 = parameter[i][1];
+                        const double delta_h_ref_t0 = parameter[i][3];
+                        const double delta_cp = parameter[i][4];
+                        const double delta_s_ref_t0 = (delta_h_ref_t0 - delta_g_ref_t0) / t0;
+                        const double t = plumed.getAtoms().getKbT() / plumed.getAtoms().getKBoltzmann();
+                        parameter[i][1] -= delta_s_ref_t0 * (t - t0) - delta_cp * t * std::log(t / t0) + delta_cp * (t - t0);
+                        parameter[i][2] *= parameter[i][1] / delta_g_ref_t0;
+                    }
+                }
+            } else {
+                error("MOLINFO DATA not found\n");
             }
         }
 
@@ -727,351 +807,344 @@ Calculate EEF1-SB solvation free energy
                             {"HG22", "HA3"},
                             {"HG23", "HA3"},
                             {"C",    "C"  },
-                            {"O",    "O"  },
+                            {"O",    "O"  }
                         }
                 }
             };
-        }
 
-        void Implicit::setupConstants(const vector<AtomNumber> &atoms, vector<vector<double> > &parameter) {
-            setupTypeMap();
-            vector<SetupMolInfo*> moldat = plumed.getActionSet().select<SetupMolInfo*>();
-            if (moldat.size() == 1) {
-                log << "  MOLINFO DATA found, using proper atom names\n";
-                for(unsigned i=0; i<atoms.size(); ++i) {
-
-                    // Get atom and residue names
-                    string Aname = moldat[0]->getAtomName(atoms[i]);
-                    string Rname = moldat[0]->getResidueName(atoms[i]);
-                    string Atype = typemap[Rname][Aname];
-
-                    // Check for terminal COOH or COO- (different atomtypes & parameters!)
-                    if (moldat[0]->getAtomName(atoms[i]) == "OT1") {
-                        // We create a temporary AtomNumber object to access future atoms
-                        unsigned ai = atoms[i].index();
-                        AtomNumber tmp_an;
-                        tmp_an.setIndex(ai + 2);
-                        if (moldat[0]->getAtomName(tmp_an) == "HT2") {
-                            // COOH
-                            Atype = "OB";
-                        } else {
-                            // COO-
-                            Atype = "OC";
+            // Volume ∆Gref ∆Gfree ∆H ∆Cp λ vdw_radius
+            valuemap = {
+                {"C", {
+                          ANG3_TO_NM3 * 14.720,
+                          KCAL_TO_KJ * 0.000,
+                          KCAL_TO_KJ * 0.000,
+                          KCAL_TO_KJ * 0.000,
+                          KCAL_TO_KJ * 0.0,
+                          ANG_TO_NM * 3.5,
+                          0.20,
+                      }
+                },
+                {"CD", {
+                           ANG3_TO_NM3 * 14.720,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.0,
+                           ANG_TO_NM * 3.5,
+                           0.20,
+                       }
+                },
+                {"CT1", {
+                            ANG3_TO_NM3 * 11.507,
+                            KCAL_TO_KJ * -0.187,
+                            KCAL_TO_KJ * -0.187,
+                            KCAL_TO_KJ * 0.876,
+                            KCAL_TO_KJ * 0.0,
+                            ANG_TO_NM * 3.5,
+                            0.20,
                         }
-                    }
-                    if (moldat[0]->getAtomName(atoms[i]) == "OT2") {
-                        unsigned ai = atoms[i].index();
-                        AtomNumber tmp_an;
-                        tmp_an.setIndex(ai + 1);
-                        if (moldat[0]->getAtomName(tmp_an) == "HT2") {
-                            // COOH
-                            Atype = "OH1";
-                        } else {
-                            // COO-
-                            Atype = "OC";
+                },
+                {"CT2", {
+                            ANG3_TO_NM3 * 18.850,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * -0.610,
+                            KCAL_TO_KJ * 18.6,
+                            ANG_TO_NM * 3.5,
+                            0.20,
                         }
-                    }
-
-                    // Check for H-atoms
-                    char type;
-                    char first = Aname.at(0);
-
-                    // GOLDEN RULE: type is first letter, if not a number
-                    if (!isdigit(first)){
-                        type = first;
-                        // otherwise is the second
-                    } else {
-                        type = Aname.at(1);
-                    }
-
-                    if (type == 'H') {
-                        error("EEF1-SB does not allow the use of hydrogen atoms!\n");
-                    }
-
-                    // Volume ∆Gref ∆Gfree ∆H ∆Cp λ vdw_radius
-                    if (Atype == "C") {
-                        parameter[i][0] = 0.001 * 14.720;
-                        parameter[i][1] = 4.184 * 0.000;
-                        parameter[i][2] = 4.184 * 0.000;
-                        parameter[i][3] = 4.184 * 0.000;
-                        parameter[i][4] = 4.184 * 0.0;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CD") {
-                        parameter[i][0] = 0.001 * 14.720;
-                        parameter[i][1] = 4.184 * 0.000;
-                        parameter[i][2] = 4.184 * 0.000;
-                        parameter[i][3] = 4.184 * 0.000;
-                        parameter[i][4] = 4.184 * 0.0;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CT1") {
-                        parameter[i][0] = 0.001 * 11.507;
-                        parameter[i][1] = 4.184 * -0.187;
-                        parameter[i][2] = 4.184 * -0.187;
-                        parameter[i][3] = 4.184 * 0.876;
-                        parameter[i][4] = 4.184 * 0.0;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CT2") {
-                        parameter[i][0] = 0.001 * 18.850;
-                        parameter[i][1] = 4.184 * 0.372;
-                        parameter[i][2] = 4.184 * 0.372;
-                        parameter[i][3] = 4.184 * -0.610;
-                        parameter[i][4] = 4.184 * 18.6;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CT2A") {
-                        parameter[i][0] = 0.001 * 18.666;
-                        parameter[i][1] = 4.184 * 0.372;
-                        parameter[i][2] = 4.184 * 0.372;
-                        parameter[i][3] = 4.184 * -0.610;
-                        parameter[i][4] = 4.184 * 18.6;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CT3") {
-                        parameter[i][0] = 0.001 * 27.941;
-                        parameter[i][1] = 4.184 * 1.089;
-                        parameter[i][2] = 4.184 * 1.089;
-                        parameter[i][3] = 4.184 * -1.779;
-                        parameter[i][4] = 4.184 * 35.6;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.204;
-                    } else if (Atype == "CPH1") {
-                        parameter[i][0] = 0.001 * 5.275;
-                        parameter[i][1] = 4.184 * 0.057;
-                        parameter[i][2] = 4.184 * 0.080;
-                        parameter[i][3] = 4.184 * -0.973;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.18;
-                    } else if (Atype == "CPH2") {
-                        parameter[i][0] = 0.001 * 11.796;
-                        parameter[i][1] = 4.184 * 0.057;
-                        parameter[i][2] = 4.184 * 0.080;
-                        parameter[i][3] = 4.184 * -0.973;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.18;
-                    } else if (Atype == "CPT") {
-                        parameter[i][0] = 0.001 * 4.669;
-                        parameter[i][1] = 4.184 * -0.890;
-                        parameter[i][2] = 4.184 * -0.890;
-                        parameter[i][3] = 4.184 * 2.220;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.186;
-                    } else if (Atype == "CY") {
-                        parameter[i][0] = 0.001 * 10.507;
-                        parameter[i][1] = 4.184 * -0.890;
-                        parameter[i][2] = 4.184 * -0.890;
-                        parameter[i][3] = 4.184 * 2.220;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.199;
-                    } else if (Atype == "CP1") {
-                        parameter[i][0] = 0.001 * 25.458;
-                        parameter[i][1] = 4.184 * -0.187;
-                        parameter[i][2] = 4.184 * -0.187;
-                        parameter[i][3] = 4.184 * 0.876;
-                        parameter[i][4] = 4.184 * 0.0;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.227;
-                    } else if (Atype == "CP2") {
-                        parameter[i][0] = 0.001 * 19.880;
-                        parameter[i][1] = 4.184 * 0.372;
-                        parameter[i][2] = 4.184 * 0.372;
-                        parameter[i][3] = 4.184 * -0.610;
-                        parameter[i][4] = 4.184 * 18.6;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.217;
-                    } else if (Atype == "CP3") {
-                        parameter[i][0] = 0.001 * 26.731;
-                        parameter[i][1] = 4.184 * 0.372;
-                        parameter[i][2] = 4.184 * 0.372;
-                        parameter[i][3] = 4.184 * -0.610;
-                        parameter[i][4] = 4.184 * 18.6;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.217;
-                    } else if (Atype == "CC") {
-                        parameter[i][0] = 0.001 * 16.539;
-                        parameter[i][1] = 4.184 * 0.000;
-                        parameter[i][2] = 4.184 * 0.000;
-                        parameter[i][3] = 4.184 * 0.000;
-                        parameter[i][4] = 4.184 * 0.0;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "CAI") {
-                        parameter[i][0] = 0.001 * 18.249;
-                        parameter[i][1] = 4.184 * 0.057;
-                        parameter[i][2] = 4.184 * 0.057;
-                        parameter[i][3] = 4.184 * -0.973;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.199;
-                    } else if (Atype == "CA") {
-                        parameter[i][0] = 0.001 * 18.249;
-                        parameter[i][1] = 4.184 * 0.057;
-                        parameter[i][2] = 4.184 * 0.057;
-                        parameter[i][3] = 4.184 * -0.973;
-                        parameter[i][4] = 4.184 * 6.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.199;
-                    } else if (Atype == "N") {
-                        parameter[i][0] = 0.001 * 0.000;
-                        parameter[i][1] = 4.184 * -1.000;
-                        parameter[i][2] = 4.184 * -1.000;
-                        parameter[i][3] = 4.184 * -1.250;
-                        parameter[i][4] = 4.184 * 8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NR1") {
-                        parameter[i][0] = 0.001 * 15.273;
-                        parameter[i][1] = 4.184 * -5.950;
-                        parameter[i][2] = 4.184 * -5.950;
-                        parameter[i][3] = 4.184 * -9.059;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NR2") {
-                        parameter[i][0] = 0.001 * 15.111;
-                        parameter[i][1] = 4.184 * -3.820;
-                        parameter[i][2] = 4.184 * -3.820;
-                        parameter[i][3] = 4.184 * -4.654;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NR3") {
-                        parameter[i][0] = 0.001 * 15.071;
-                        parameter[i][1] = 4.184 * -5.950;
-                        parameter[i][2] = 4.184 * -5.950;
-                        parameter[i][3] = 4.184 * -9.059;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NH1") {
-                        parameter[i][0] = 0.001 * 10.197;
-                        parameter[i][1] = 4.184 * -5.950;
-                        parameter[i][2] = 4.184 * -5.950;
-                        parameter[i][3] = 4.184 * -9.059;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NH2") {
-                        parameter[i][0] = 0.001 * 18.182;
-                        parameter[i][1] = 4.184 * -5.950;
-                        parameter[i][2] = 4.184 * -5.950;
-                        parameter[i][3] = 4.184 * -9.059;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NH3") {
-                        parameter[i][0] = 0.001 * 18.817;
-                        parameter[i][1] = 4.184 * -20.000;
-                        parameter[i][2] = 4.184 * -20.000;
-                        parameter[i][3] = 4.184 * -25.000;
-                        parameter[i][4] = 4.184 * -18.0;
-                        parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NC2") {
-                        parameter[i][0] = 0.001 * 18.215;
-                        parameter[i][1] = 4.184 * -10.000;
-                        parameter[i][2] = 4.184 * -10.000;
-                        parameter[i][3] = 4.184 * -12.000;
-                        parameter[i][4] = 4.184 * -7.0;
-                        parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NY") {
-                        parameter[i][0] = 0.001 * 12.001;
-                        parameter[i][1] = 4.184 * -5.950;
-                        parameter[i][2] = 4.184 * -5.950;
-                        parameter[i][3] = 4.184 * -9.059;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "NP") {
-                        parameter[i][0] = 0.001 * 4.993;
-                        parameter[i][1] = 4.184 * -20.000;
-                        parameter[i][2] = 4.184 * -20.000;
-                        parameter[i][3] = 4.184 * -25.000;
-                        parameter[i][4] = 4.184 * -18.0;
-                        parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.185;
-                    } else if (Atype == "O") {
-                        parameter[i][0] = 0.001 * 11.772;
-                        parameter[i][1] = 4.184 * -5.330;
-                        parameter[i][2] = 4.184 * -5.330;
-                        parameter[i][3] = 4.184 * -5.787;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.170;
-                    } else if (Atype == "OB") {
-                        parameter[i][0] = 0.001 * 11.694;
-                        parameter[i][1] = 4.184 * -5.330;
-                        parameter[i][2] = 4.184 * -5.330;
-                        parameter[i][3] = 4.184 * -5.787;
-                        parameter[i][4] = 4.184 * -8.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.170;
-                    } else if (Atype == "OC") {
-                        parameter[i][0] = 0.001 * 12.003;
-                        parameter[i][1] = 4.184 * -10.000;
-                        parameter[i][2] = 4.184 * -10.000;
-                        parameter[i][3] = 4.184 * -12.000;
-                        parameter[i][4] = 4.184 * -9.4;
-                        parameter[i][5] = 0.1 * 6.0;
-                        parameter[i][6] = 0.170;
-                    } else if (Atype == "OH1") {
-                        parameter[i][0] = 0.001 * 15.528;
-                        parameter[i][1] = 4.184 * -5.920;
-                        parameter[i][2] = 4.184 * -5.920;
-                        parameter[i][3] = 4.184 * -9.264;
-                        parameter[i][4] = 4.184 * -11.2;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.177;
-                    } else if (Atype == "OS") {
-                        parameter[i][0] = 0.001 * 6.774;
-                        parameter[i][1] = 4.184 * -2.900;
-                        parameter[i][2] = 4.184 * -2.900;
-                        parameter[i][3] = 4.184 * -3.150;
-                        parameter[i][4] = 4.184 * -4.8;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.177;
-                    } else if (Atype == "S") {
-                        parameter[i][0] = 0.001 * 20.703;
-                        parameter[i][1] = 4.184 * -3.240;
-                        parameter[i][2] = 4.184 * -3.240;
-                        parameter[i][3] = 4.184 * -4.475;
-                        parameter[i][4] = 4.184 * -39.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.20;
-                    } else if (Atype == "SM") {
-                        parameter[i][0] = 0.001 * 21.306;
-                        parameter[i][1] = 4.184 * -3.240;
-                        parameter[i][2] = 4.184 * -3.240;
-                        parameter[i][3] = 4.184 * -4.475;
-                        parameter[i][4] = 4.184 * -39.9;
-                        parameter[i][5] = 0.1 * 3.5;
-                        parameter[i][6] = 0.197;
-                    } else {
-                        error("Invalid atom type!\n");
-                    }
-
-                    // Temperature correction
-                    if (tcorr && parameter[i][1] > 0.0) {
-                        const double t0 = 298.15;
-                        const double delta_g_ref_t0 = parameter[i][1];
-                        const double delta_h_ref_t0 = parameter[i][3];
-                        const double delta_cp = parameter[i][4];
-                        const double delta_s_ref_t0 = (delta_h_ref_t0 - delta_g_ref_t0) / t0;
-                        const double t = plumed.getAtoms().getKbT() / plumed.getAtoms().getKBoltzmann();
-                        parameter[i][1] -= delta_s_ref_t0 * (t - t0) - delta_cp * t * std::log(t / t0) + delta_cp * (t - t0);
-                        parameter[i][2] *= parameter[i][1] / delta_g_ref_t0;
-                    }
+                },
+                {"CT2A", {
+                             ANG3_TO_NM3 * 18.666,
+                             KCAL_TO_KJ * 0.372,
+                             KCAL_TO_KJ * 0.372,
+                             KCAL_TO_KJ * -0.610,
+                             KCAL_TO_KJ * 18.6,
+                             ANG_TO_NM * 3.5,
+                             0.20,
+                         }
+                },
+                {"CT3", {
+                            ANG3_TO_NM3 * 27.941,
+                            KCAL_TO_KJ * 1.089,
+                            KCAL_TO_KJ * 1.089,
+                            KCAL_TO_KJ * -1.779,
+                            KCAL_TO_KJ * 35.6,
+                            ANG_TO_NM * 3.5,
+                            0.204,
+                        }
+                },
+                {"CPH1", {
+                             ANG3_TO_NM3 * 5.275,
+                             KCAL_TO_KJ * 0.057,
+                             KCAL_TO_KJ * 0.080,
+                             KCAL_TO_KJ * -0.973,
+                             KCAL_TO_KJ * 6.9,
+                             ANG_TO_NM * 3.5,
+                             0.18,
+                         }
+                },
+                {"CPH2", {
+                             ANG3_TO_NM3 * 11.796,
+                             KCAL_TO_KJ * 0.057,
+                             KCAL_TO_KJ * 0.080,
+                             KCAL_TO_KJ * -0.973,
+                             KCAL_TO_KJ * 6.9,
+                             ANG_TO_NM * 3.5,
+                             0.18,
+                         }
+                },
+                {"CPT", {
+                            ANG3_TO_NM3 * 4.669,
+                            KCAL_TO_KJ * -0.890,
+                            KCAL_TO_KJ * -0.890,
+                            KCAL_TO_KJ * 2.220,
+                            KCAL_TO_KJ * 6.9,
+                            ANG_TO_NM * 3.5,
+                            0.186,
+                        }
+                },
+                {"CY", {
+                           ANG3_TO_NM3 * 10.507,
+                           KCAL_TO_KJ * -0.890,
+                           KCAL_TO_KJ * -0.890,
+                           KCAL_TO_KJ * 2.220,
+                           KCAL_TO_KJ * 6.9,
+                           ANG_TO_NM * 3.5,
+                           0.199,
+                       }
+                },
+                {"CP1", {
+                            ANG3_TO_NM3 * 25.458,
+                            KCAL_TO_KJ * -0.187,
+                            KCAL_TO_KJ * -0.187,
+                            KCAL_TO_KJ * 0.876,
+                            KCAL_TO_KJ * 0.0,
+                            ANG_TO_NM * 3.5,
+                            0.227,
+                        }
+                },
+                {"CP2", {
+                            ANG3_TO_NM3 * 19.880,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * -0.610,
+                            KCAL_TO_KJ * 18.6,
+                            ANG_TO_NM * 3.5,
+                            0.217,
+                        }
+                },
+                {"CP3", {
+                            ANG3_TO_NM3 * 26.731,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * 0.372,
+                            KCAL_TO_KJ * -0.610,
+                            KCAL_TO_KJ * 18.6,
+                            ANG_TO_NM * 3.5,
+                            0.217,
+                        }
+                },
+                {"CC", {
+                           ANG3_TO_NM3 * 16.539,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.000,
+                           KCAL_TO_KJ * 0.0,
+                           ANG_TO_NM * 3.5,
+                           0.20,
+                       }
+                },
+                {"CAI", {
+                            ANG3_TO_NM3 * 18.249,
+                            KCAL_TO_KJ * 0.057,
+                            KCAL_TO_KJ * 0.057,
+                            KCAL_TO_KJ * -0.973,
+                            KCAL_TO_KJ * 6.9,
+                            ANG_TO_NM * 3.5,
+                            0.199,
+                        }
+                },
+                {"CA", {
+                           ANG3_TO_NM3 * 18.249,
+                           KCAL_TO_KJ * 0.057,
+                           KCAL_TO_KJ * 0.057,
+                           KCAL_TO_KJ * -0.973,
+                           KCAL_TO_KJ * 6.9,
+                           ANG_TO_NM * 3.5,
+                           0.199,
+                       }
+                },
+                {"N", {
+                          ANG3_TO_NM3 * 0.000,
+                          KCAL_TO_KJ * -1.000,
+                          KCAL_TO_KJ * -1.000,
+                          KCAL_TO_KJ * -1.250,
+                          KCAL_TO_KJ * 8.8,
+                          ANG_TO_NM * 3.5,
+                          0.185,
+                      }
+                },
+                {"NR1", {
+                            ANG3_TO_NM3 * 15.273,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -9.059,
+                            KCAL_TO_KJ * -8.8,
+                            ANG_TO_NM * 3.5,
+                            0.185,
+                        }
+                },
+                {"NR2", {
+                            ANG3_TO_NM3 * 15.111,
+                            KCAL_TO_KJ * -3.820,
+                            KCAL_TO_KJ * -3.820,
+                            KCAL_TO_KJ * -4.654,
+                            KCAL_TO_KJ * -8.8,
+                            ANG_TO_NM * 3.5,
+                            0.185,
+                        }
+                },
+                {"NR3", {
+                            ANG3_TO_NM3 * 15.071,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -9.059,
+                            KCAL_TO_KJ * -8.8,
+                            ANG_TO_NM * 3.5,
+                            0.185,
+                        }
+                },
+                {"NH1", {
+                            ANG3_TO_NM3 * 10.197,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -9.059,
+                            KCAL_TO_KJ * -8.8,
+                            ANG_TO_NM * 3.5,
+                            0.185,
+                        }
+                },
+                {"NH2", {
+                            ANG3_TO_NM3 * 18.182,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -5.950,
+                            KCAL_TO_KJ * -9.059,
+                            KCAL_TO_KJ * -8.8,
+                            ANG_TO_NM * 3.5,
+                            0.185,
+                        }
+                },
+                {"NH3", {
+                            ANG3_TO_NM3 * 18.817,
+                            KCAL_TO_KJ * -20.000,
+                            KCAL_TO_KJ * -20.000,
+                            KCAL_TO_KJ * -25.000,
+                            KCAL_TO_KJ * -18.0,
+                            ANG_TO_NM * 6.0,
+                            0.185,
+                        }
+                },
+                {"NC2", {
+                            ANG3_TO_NM3 * 18.215,
+                            KCAL_TO_KJ * -10.000,
+                            KCAL_TO_KJ * -10.000,
+                            KCAL_TO_KJ * -12.000,
+                            KCAL_TO_KJ * -7.0,
+                            ANG_TO_NM * 6.0,
+                            0.185,
+                        }
+                },
+                {"NY", {
+                           ANG3_TO_NM3 * 12.001,
+                           KCAL_TO_KJ * -5.950,
+                           KCAL_TO_KJ * -5.950,
+                           KCAL_TO_KJ * -9.059,
+                           KCAL_TO_KJ * -8.8,
+                           ANG_TO_NM * 3.5,
+                           0.185,
+                       }
+                },
+                {"NP", {
+                           ANG3_TO_NM3 * 4.993,
+                           KCAL_TO_KJ * -20.000,
+                           KCAL_TO_KJ * -20.000,
+                           KCAL_TO_KJ * -25.000,
+                           KCAL_TO_KJ * -18.0,
+                           ANG_TO_NM * 6.0,
+                           0.185,
+                       }
+                },
+                {"O", {
+                          ANG3_TO_NM3 * 11.772,
+                          KCAL_TO_KJ * -5.330,
+                          KCAL_TO_KJ * -5.330,
+                          KCAL_TO_KJ * -5.787,
+                          KCAL_TO_KJ * -8.8,
+                          ANG_TO_NM * 3.5,
+                          0.170,
+                      }
+                },
+                {"OB", {
+                           ANG3_TO_NM3 * 11.694,
+                           KCAL_TO_KJ * -5.330,
+                           KCAL_TO_KJ * -5.330,
+                           KCAL_TO_KJ * -5.787,
+                           KCAL_TO_KJ * -8.8,
+                           ANG_TO_NM * 3.5,
+                           0.170,
+                       }
+                },
+                {"OC", {
+                           ANG3_TO_NM3 * 12.003,
+                           KCAL_TO_KJ * -10.000,
+                           KCAL_TO_KJ * -10.000,
+                           KCAL_TO_KJ * -12.000,
+                           KCAL_TO_KJ * -9.4,
+                           ANG_TO_NM * 6.0,
+                           0.170,
+                       }
+                },
+                {"OH1", {
+                            ANG3_TO_NM3 * 15.528,
+                            KCAL_TO_KJ * -5.920,
+                            KCAL_TO_KJ * -5.920,
+                            KCAL_TO_KJ * -9.264,
+                            KCAL_TO_KJ * -11.2,
+                            ANG_TO_NM * 3.5,
+                            0.177,
+                        }
+                },
+                {"OS", {
+                           ANG3_TO_NM3 * 6.774,
+                           KCAL_TO_KJ * -2.900,
+                           KCAL_TO_KJ * -2.900,
+                           KCAL_TO_KJ * -3.150,
+                           KCAL_TO_KJ * -4.8,
+                           ANG_TO_NM * 3.5,
+                           0.177,
+                       }
+                },
+                {"S", {
+                          ANG3_TO_NM3 * 20.703,
+                          KCAL_TO_KJ * -3.240,
+                          KCAL_TO_KJ * -3.240,
+                          KCAL_TO_KJ * -4.475,
+                          KCAL_TO_KJ * -39.9,
+                          ANG_TO_NM * 3.5,
+                          0.20,
+                      }
+                },
+                {"SM", {
+                           ANG3_TO_NM3 * 21.306,
+                           KCAL_TO_KJ * -3.240,
+                           KCAL_TO_KJ * -3.240,
+                           KCAL_TO_KJ * -4.475,
+                           KCAL_TO_KJ * -39.9,
+                           ANG_TO_NM * 3.5,
+                           0.197,
+                       }
                 }
-            } else {
-                error("MOLINFO DATA not found\n");
-            }
+            };
         }
     }
 }

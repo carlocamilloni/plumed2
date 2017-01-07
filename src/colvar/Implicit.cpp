@@ -1,5 +1,5 @@
 /* +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   Copyright (c) 2016 The plumed team
+   Copyright (c) 2016-2017 The plumed team
    (see the PEOPLE file at the root of the distribution for a list of names)
 
    See http://www.plumed.org for more information.
@@ -27,10 +27,20 @@
 #include "core/SetupMolInfo.h"
 #include "tools/OpenMP.h"
 
+// These are only required when using the vectorized version
+#include "emmintrin.h"
+#include "immintrin.h"
+
 #define INV_PI_SQRT_PI 0.179587122
 #define KCAL_TO_KJ 4.184
 #define ANG_TO_NM 0.1
 #define ANG3_TO_NM3 0.001
+#define INNER_LOOP_STRIDE 4
+
+// WARNING: Here be dragons!
+// Uncomment the next line for SIMD version, which is about 1.25 times faster
+// clang will choke on this, gcc requires -mveclibabi=svml, icpc should work just fine
+// #define AVXNLLOOP
 
 using namespace std;
 
@@ -181,6 +191,219 @@ PRINT ARG=solv FILE=SOLV
             }
         }
 
+#ifdef AVXNLLOOP
+        void Implicit::calculate() {
+            if (pbc) makeWhole();
+            if (getExchangeStep()) nl_update = 0;
+            if (nl_update == 0) update_neighb();
+
+            const unsigned size = getNumberOfAtoms();
+            vector<Vector> fedensity_deriv(size);
+            double bias = 0.0;
+
+            // Define constants (4 64bit doubles in one 256bit (AVX) register)
+            const __m256d m_INV_PI_SQRT_PI = _mm256_set1_pd(INV_PI_SQRT_PI);
+            const __m256d m_ones           = _mm256_set1_pd(1.0);
+            const __m256d m_zero           = _mm256_set1_pd(0.0);
+
+            // Main loop over all non-hydrogen atoms
+            for (unsigned i = 0; i < size; ++i) {
+                const Vector posi = getPosition(i);
+                const double delta_g_ref = parameter[i][1];
+
+                // Get the inner loop size from the neighbourlist
+                const unsigned inner_size = nl[i].size();
+
+                // size modulo 4 gives us the size of the remainder
+                const unsigned inner_remainder = inner_size % INNER_LOOP_STRIDE;
+
+                // Set free-energy density accumulator to 0
+                __m256d m_fedensity = _mm256_set1_pd(0.0);
+
+                // Main vectorized loop, we handle 4 values at once
+                for (unsigned i_nl = 0; i_nl < (inner_size - inner_remainder); i_nl += INNER_LOOP_STRIDE) {
+                    const unsigned j0 = nl[i][i_nl + 0];
+                    const unsigned j1 = nl[i][i_nl + 1];
+                    const unsigned j2 = nl[i][i_nl + 2];
+                    const unsigned j3 = nl[i][i_nl + 3];
+
+                    // Calculate distance vector between atom i and j
+                    const Vector dist0 = delta(posi, getPosition(j0));
+                    const Vector dist1 = delta(posi, getPosition(j1));
+                    const Vector dist2 = delta(posi, getPosition(j2));
+                    const Vector dist3 = delta(posi, getPosition(j3));
+
+                    // Calculate distance between atom i and j
+                    const __m256d m_rij               = _mm256_set_pd(dist3.modulo(),
+                                                                      dist2.modulo(),
+                                                                      dist1.modulo(),
+                                                                      dist0.modulo());
+                    // 1 / r_ij
+                    const __m256d m_inv_rij           = _mm256_div_pd(m_ones, m_rij);
+                    // 1 / r_ij^2
+                    const __m256d m_inv_rij2          = _mm256_mul_pd(m_inv_rij, m_inv_rij);
+
+                    // i-j interaction
+                    {
+                        // R_i
+                        const __m256d m_vdwr          = _mm256_set1_pd(parameter[i][6]);
+                        const __m256d m_lambda        = _mm256_set1_pd(parameter[i][5]);
+                        // 1 / lambda
+                        const __m256d m_inv_lambda    = _mm256_div_pd(m_ones, m_lambda);
+                        // 1 / lambda^2
+                        const __m256d m_inv_lambda2   = _mm256_mul_pd(m_inv_lambda, m_inv_lambda);
+                        // Delta G^free
+                        const __m256d m_delta_g_free  = _mm256_set1_pd(parameter[i][2]);
+                        // V_j
+                        const __m256d m_vdw_volume    = _mm256_set_pd(parameter[j3][0],
+                                                                      parameter[j2][0],
+                                                                      parameter[j1][0],
+                                                                      parameter[j0][0]);
+
+                        // r_ij - R_i
+                        const __m256d m_rij_vdwr_diff = _mm256_sub_pd(m_rij, m_vdwr);
+
+                        // exp(-(r_ij - R_i)^2 / lambda^2)
+                              __m256d m_exponent      = _mm256_mul_pd(m_rij_vdwr_diff, m_rij_vdwr_diff);
+                                      m_exponent      = _mm256_mul_pd(m_inv_lambda2, m_exponent);
+                        // _mm256_exp_pd requires SVML
+                        const __m256d m_expo          = _mm256_exp_pd(_mm256_sub_pd(m_zero, m_exponent));
+
+                        // Delta G^free * V_j * expo / (lambda * r_ij^2 * pi * sqrt(pi))
+                        const __m256d m_fact_a        = _mm256_mul_pd(m_delta_g_free, m_vdw_volume);
+                        const __m256d m_fact_b        = _mm256_mul_pd(m_expo, m_INV_PI_SQRT_PI);
+                        const __m256d m_fact          = _mm256_mul_pd(_mm256_mul_pd(m_fact_a, m_fact_b),
+                                                                      _mm256_mul_pd(m_inv_rij2, m_inv_lambda));
+
+                        // (1 / r_ij + (r_ij - R_i) / lambda^2) * 1 / r_ij * fact
+                              __m256d m_deriv         = _mm256_add_pd(m_inv_rij, _mm256_mul_pd(m_rij_vdwr_diff, m_inv_lambda2));
+                                      m_deriv         = _mm256_mul_pd(_mm256_mul_pd(m_inv_rij, m_fact), m_deriv);
+
+                        // Sum up bias and derivatives
+                        m_fedensity = _mm256_add_pd(m_fedensity, m_fact);
+                        fedensity_deriv[i]  += m_deriv[0] * dist0;
+                        fedensity_deriv[i]  += m_deriv[1] * dist1;
+                        fedensity_deriv[i]  += m_deriv[2] * dist2;
+                        fedensity_deriv[i]  += m_deriv[3] * dist3;
+                        fedensity_deriv[j0] -= m_deriv[0] * dist0;
+                        fedensity_deriv[j1] -= m_deriv[1] * dist1;
+                        fedensity_deriv[j2] -= m_deriv[2] * dist2;
+                        fedensity_deriv[j3] -= m_deriv[3] * dist3;
+                    }
+
+                    // j-i interaction
+                    {
+                        const __m256d m_vdwr              = _mm256_set_pd(parameter[j3][6],
+                                                                          parameter[j2][6],
+                                                                          parameter[j1][6],
+                                                                          parameter[j0][6]);
+                        const __m256d m_lambda            = _mm256_set_pd(parameter[j3][5],
+                                                                          parameter[j2][5],
+                                                                          parameter[j1][5],
+                                                                          parameter[j0][5]);
+                        const __m256d m_inv_lambda        = _mm256_div_pd(m_ones, m_lambda);
+                        const __m256d m_inv_lambda2       = _mm256_mul_pd(m_inv_lambda, m_inv_lambda);
+                        const __m256d m_delta_g_free      = _mm256_set_pd(parameter[j3][2],
+                                                                          parameter[j2][2],
+                                                                          parameter[j1][2],
+                                                                          parameter[j0][2]);
+                        const __m256d m_vdw_volume        = _mm256_set1_pd(parameter[i][0]);
+
+                        const __m256d m_rij_vdwr_diff = _mm256_sub_pd(m_rij, m_vdwr);
+                              __m256d m_exponent      = _mm256_mul_pd(m_rij_vdwr_diff, m_rij_vdwr_diff);
+                                      m_exponent      = _mm256_mul_pd(m_inv_lambda2, m_exponent);
+                        const __m256d m_expo          = _mm256_exp_pd(_mm256_sub_pd(m_zero, m_exponent));
+
+                        const __m256d m_fact_a        = _mm256_mul_pd(m_delta_g_free, m_vdw_volume);
+                        const __m256d m_fact_b        = _mm256_mul_pd(m_expo, m_INV_PI_SQRT_PI);
+                        const __m256d m_fact          = _mm256_mul_pd(_mm256_mul_pd(m_fact_a, m_fact_b),
+                                                                      _mm256_mul_pd(m_inv_rij2, m_inv_lambda));
+
+                              __m256d m_deriv         = _mm256_add_pd(m_inv_rij, _mm256_mul_pd(m_rij_vdwr_diff, m_inv_lambda2));
+                                      m_deriv         = _mm256_mul_pd(_mm256_mul_pd(m_inv_rij, m_fact), m_deriv);
+
+                        m_fedensity = _mm256_add_pd(m_fedensity, m_fact);
+                        fedensity_deriv[i]  += m_deriv[0] * dist0;
+                        fedensity_deriv[i]  += m_deriv[1] * dist1;
+                        fedensity_deriv[i]  += m_deriv[2] * dist2;
+                        fedensity_deriv[i]  += m_deriv[3] * dist3;
+                        fedensity_deriv[j0] -= m_deriv[0] * dist0;
+                        fedensity_deriv[j1] -= m_deriv[1] * dist1;
+                        fedensity_deriv[j2] -= m_deriv[2] * dist2;
+                        fedensity_deriv[j3] -= m_deriv[3] * dist3;
+                    }
+                }
+
+                // Sum up 4 elements of vector
+                double fedensity = m_fedensity[0] + m_fedensity[1] + m_fedensity[2] + m_fedensity[3];
+
+                // Remainder loop, like the generic version, but max 3 iterations
+                for (unsigned i_nl = (inner_size - inner_remainder); i_nl < inner_size; ++i_nl) {
+                    const unsigned j = nl[i][i_nl];
+                    const Vector dist = delta(posi, getPosition(j));
+                    const double rij = dist.modulo();
+                    const double inv_rij = 1.0 / rij;
+                    const double inv_rij2 = inv_rij * inv_rij;
+
+                    // i-j interaction
+                    if(rij < 3.*parameter[i][5])
+                    {
+                        const double delta_g_free = parameter[i][2];
+                        const double lambda = parameter[i][5];
+                        const double vdw_radius = parameter[i][6];
+                        const double inv_lambda = 1.0 / lambda;
+                        const double inv_lambda2 = inv_lambda * inv_lambda;
+                        const double vdw_volume = parameter[j][0];
+
+                        const double rij_vdwr_diff = rij - vdw_radius;
+                        const double expo = exp(-inv_lambda2 * rij_vdwr_diff * rij_vdwr_diff);
+                        const double fact = delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
+                        const double deriv = inv_rij * fact * (inv_rij + rij_vdwr_diff * inv_lambda2);
+
+                        fedensity += fact;
+                        fedensity_deriv[i] += deriv * dist;
+                        fedensity_deriv[j] -= deriv * dist;
+                    }
+
+                    // j-i interaction
+                    if(rij < 3.*parameter[j][5])
+                    {
+                        const double delta_g_free = parameter[j][2];
+                        const double lambda = parameter[j][5];
+                        const double vdw_radius = parameter[j][6];
+                        const double inv_lambda = 1.0 / lambda;
+                        const double inv_lambda2 = inv_lambda * inv_lambda;
+                        const double vdw_volume = parameter[i][0];
+
+                        const double rij_vdwr_diff = rij - vdw_radius;
+                        const double expo = exp(-inv_lambda2 * rij_vdwr_diff * rij_vdwr_diff);
+                        const double fact = delta_g_free * vdw_volume * expo * INV_PI_SQRT_PI * inv_rij2 * inv_lambda;
+                        const double deriv = inv_rij * fact * (inv_rij + rij_vdwr_diff * inv_lambda2);
+
+                        fedensity += fact;
+                        fedensity_deriv[i] += deriv * dist;
+                        fedensity_deriv[j] -= deriv * dist;
+                    }
+                }
+                bias += delta_g_ref - 0.5 * fedensity;
+            }
+
+            Tensor deriv_box;
+            for (unsigned i=0; i<size; ++i) {
+                setAtomsDerivatives(i, -fedensity_deriv[i]);
+                deriv_box += Tensor(getPosition(i), -fedensity_deriv[i]);
+            }
+            setBoxDerivatives(-deriv_box);
+            setValue(bias);
+
+            // Keep track of the neighbourlist updates
+            ++nl_update;
+            if (nl_update == stride) {
+                nl_update = 0;
+            }
+        }
+
+#else
         void Implicit::calculate() {
             if(pbc) makeWhole();
             if(getExchangeStep()) nl_update = 0;
@@ -281,6 +504,7 @@ PRINT ARG=solv FILE=SOLV
                 nl_update = 0;
             }
         }
+#endif
 
         void Implicit::setupConstants(const vector<AtomNumber> &atoms, vector<vector<double> > &parameter) {
             setupTypeMap();

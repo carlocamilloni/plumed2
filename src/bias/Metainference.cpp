@@ -684,8 +684,8 @@ double Metainference::getEnergySP(const vector<double> &mean, const vector<doubl
   const double scale2 = scale*scale;
   const double mod2   = modifier*modifier;
   const double sm2    = scale2*mod2*sigma_mean_[0]*sigma_mean_[0];
-  const double ss2    = scale2*sigma[0]*sigma[0] + sm2;
-  const double sss    = ss2/scale2;
+  const double ss2    = sigma[0]*sigma[0] + sm2;
+  const double sss    = sigma[0]*sigma[0] + mod2*sigma_mean_[0]*sigma_mean_[0];
 
   double ene = 0.0;
   #pragma omp parallel num_threads(OpenMP::getNumThreads()) shared(ene)
@@ -715,17 +715,15 @@ double Metainference::getEnergySPE(const vector<double> &mean, const vector<doub
     #pragma omp for reduction( + : ene)
     for(unsigned i=0;i<narg;++i){
       const double sm2 = scale2*mod2*sigma_mean_[i]*sigma_mean_[i];
-      const double ss2 = scale2*sigma[i]*sigma[i] + sm2;
-      const double sss = ss2/scale2;
+      const double ss2 = sigma[i]*sigma[i] + sm2;
+      const double sss = sigma[i]*sigma[i] + mod2*sigma_mean_[i]*sigma_mean_[i];
       const double dev = scale*mean[i]-parameters[i]+offset; 
       const double a2  = 0.5*dev*dev + ss2;
-      ene += std::log(2.0*a2/(1.0-exp(-a2/sm2)));
+      ene += std::log(sss) + 0.5*std::log(0.5*M_PI*M_PI/ss2) + std::log(2.0*a2/(1.0-exp(-a2/sm2)));
       if(doscale_)  ene += 0.5*std::log(sss);
       if(dooffset_) ene += 0.5*std::log(sss);
     }
   }
-  ene += static_cast<double>(narg)*0.5*std::log(0.5*M_PI*M_PI/scale2); 
-  // add normalization and Jeffrey's prior
   return kbt_ * ene;
 }
 
@@ -734,8 +732,8 @@ double Metainference::getEnergyGJ(const vector<double> &mean, const vector<doubl
 {
   const double scale2  = scale*scale;
   const double mod2    = modifier*modifier;
-  const double inv_s2  = 1./(scale2*sigma[0]*sigma[0] + scale2*mod2*sigma_mean_[0]*sigma_mean_[0]);
-  const double inv_sss = scale2*inv_s2;
+  const double inv_s2  = 1./(sigma[0]*sigma[0] + scale2*mod2*sigma_mean_[0]*sigma_mean_[0]);
+  const double inv_sss = 1./(sigma[0]*sigma[0] + mod2*sigma_mean_[0]*sigma_mean_[0]);
 
   double ene = 0.0;
   #pragma omp parallel num_threads(OpenMP::getNumThreads()) shared(ene)
@@ -746,11 +744,12 @@ double Metainference::getEnergyGJ(const vector<double> &mean, const vector<doubl
       ene += 0.5*dev*dev*inv_s2;
     }
   }
-  const double jef_n = -0.5*std::log(inv_sss);
+  const double normalisation = -0.5*std::log(scale2*inv_s2);
+  const double jeffreys = -0.5*std::log(inv_sss);
   // add Jeffrey's prior in case one sigma for all data points + one normalisation per datapoint
-  ene += jef_n + static_cast<double>(narg)*jef_n;
-  if(doscale_)  ene += jef_n;
-  if(dooffset_) ene += jef_n;
+  ene += jeffreys + static_cast<double>(narg)*normalisation;
+  if(doscale_)  ene += jeffreys;
+  if(dooffset_) ene += jeffreys;
 
   return kbt_ * ene;
 }
@@ -766,14 +765,15 @@ double Metainference::getEnergyGJE(const vector<double> &mean, const vector<doub
   { 
     #pragma omp for reduction( + : ene)
     for(unsigned i=0;i<narg;++i){
-      const double inv_s2  = 1./(scale2*sigma[i]*sigma[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
-      const double inv_sss = scale2*inv_s2;
+      const double inv_s2  = 1./(sigma[i]*sigma[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
+      const double inv_sss = 1./(sigma[i]*sigma[i] + mod2*sigma_mean_[i]*sigma_mean_[i]);
       double dev = scale*mean[i]-parameters[i]+offset;
       // deviation + normalisation + jeffrey
-      const double jef_n = -0.5*std::log(inv_sss);
-      ene += 0.5*dev*dev*inv_s2 + jef_n + jef_n;
-      if(doscale_)  ene += jef_n;
-      if(dooffset_) ene += jef_n;
+      const double normalisation = -0.5*std::log(scale2*inv_s2);
+      const double jeffreys      = -0.5*std::log(inv_sss);
+      ene += 0.5*dev*dev*inv_s2 + normalisation + jeffreys;
+      if(doscale_)  ene += jeffreys;
+      if(dooffset_) ene += jeffreys;
     }
   }
   return kbt_ * ene;
@@ -1164,7 +1164,6 @@ void Metainference::calculate()
   const double dnrep = static_cast<double>(nrep_);
   double norm        = 0.0;
   double fact        = 0.0;
-  //double idof        = 1.0;
   double ave_fact    = 1.0/dnrep;
   double var_fact    = 0.0;
 
@@ -1183,12 +1182,10 @@ void Metainference::calculate()
     }
     fact = bias[replica_]/norm;
     for(unsigned i=0;i<nrep_;++i) var_fact += (bias[i]/norm-ave_fact)*(bias[i]/norm-ave_fact);
-    //idof = 1./(dnrep*(1. - n2/(norm*norm)));
   } else {
     // or arithmetic ones
     norm = dnrep; 
     fact = 1.0/norm; 
-    //idof = 1.0/norm;
   }
 
   // calculate the mean 
@@ -1227,8 +1224,6 @@ void Metainference::calculate()
     const double sq_dnrep = sqrt(dnrep);
     bool sm_update = false;
     for(unsigned i=0;i<narg;++i) {
-      /* this is the squared standard error of the mean */
-      //v_moment[i]*=idof;
       /* if this is larger than the old one we update it */ 
       if(v_moment[i]>variance_[i]) {
         sm_update = true;

@@ -53,10 +53,12 @@ class SAXS : public Colvar {
 private:
   bool                     pbc;
   bool                     serial;
+  bool                     rescale;
   unsigned                 numq;
   vector<double>           q_list;
   vector<vector<double> >  FF_value;
   vector<double>           FF_rank;
+  vector<double>           expint; //rescale
 
 public:
   static void registerKeywords( Keywords& keys );
@@ -79,6 +81,7 @@ void SAXS::registerKeywords(Keywords& keys){
   keys.add("numbered","QVALUE","Selected scattering lenghts in Angstrom are given as QVALUE1, QVALUE2, ... .");
   keys.add("numbered","PARAMETERS","Used parameter Keywords like PARAMETERS1, PARAMETERS2. These are used to calculate the structure factor for the i-th atom/bead.");
   keys.addFlag("ADDEXPVALUES",false,"Set to TRUE if you want to have fixed components with the experimental values.");
+  keys.addFlag("RESCALE",false,"Set to TRUE if you want to have fixed components with the experimental values.");
   keys.add("numbered","EXPINT","Add an experimental value for each q value.");
   keys.add("compulsory","SCEXP","1.0","SCALING value of the experimental data. Usefull to simplify the comparison.");
 }
@@ -160,10 +163,13 @@ serial(false)
     }
   }
 
+  rescale=false; // rescale calcuated values with experimental values
+  parseFlag("RESCALE",rescale);
+
   bool exp=false;
   parseFlag("ADDEXPVALUES",exp);
   if(exp) {
-    vector<double>   expint;
+    //vector<double>   expint; //resacale
     expint.resize( numq ); 
     unsigned ntarget=0;
     for(unsigned i=0;i<numq;++i){
@@ -176,7 +182,11 @@ serial(false)
       std::string num; Tools::convert(i,num);
       addComponent("exp_"+num);
       componentIsNotPeriodic("exp_"+num);
-      Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]*scexp);
+      if(rescale==false) { //rescale
+        Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]*scexp);
+      } else {
+        expint[i]=expint[i]*scexp;
+      }
     }
   }
 
@@ -184,6 +194,7 @@ serial(false)
   for(unsigned i=0;i<numq;++i){
     q_list[i]=q_list[i]*10.0;    //factor 10 to convert from A^-1 to nm^-1
   } 
+
 
   requestAtoms(atoms);
   checkRead();
@@ -216,8 +227,14 @@ void SAXS::calculate(){
         const double m_distances = c_distances.modulo();
         const double qdist       = q_list[k]*m_distances;
         const double FFF = FF*FF_value[k][j];
-        const double tsq = FFF*sin(qdist)/qdist;
-        const double tcq = FFF*cos(qdist);
+        double tsq = FFF*sin(qdist)/qdist;
+        double tcq = FFF*cos(qdist);
+
+        if(rescale){
+          tsq = tsq/expint[k];
+          tcq = tcq/expint[k];
+        }
+
         const double tmp = (tcq-tsq)/(m_distances*m_distances);
         const Vector dd  = c_distances*tmp;
         dsum         += dd;
@@ -242,9 +259,18 @@ void SAXS::calculate(){
       setAtomsDerivatives(val, i, deriv[kdx+i]);
       deriv_box += Tensor(getPosition(i),deriv[kdx+i]);
     }
-    sum[k]+=FF_rank[k];
+    if(rescale){
+      sum[k]+=FF_rank[k]/expint[k];
+    } else {
+      sum[k]+=FF_rank[k];
+    }
     val->set(sum[k]);
     setBoxDerivatives(val, -deriv_box);
+
+    if(rescale){
+      std::string num; Tools::convert(k,num);
+      Value* comp=getPntrToComponent("exp_"+num); comp->set(1);
+    }
   }
 
 }

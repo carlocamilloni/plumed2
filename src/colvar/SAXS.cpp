@@ -186,6 +186,8 @@ serial(false)
         Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]*scexp);
       } else {
         expint[i]=expint[i]*scexp;
+        std::string num; Tools::convert(i,num);
+        Value* comp=getPntrToComponent("exp_"+num); comp->set(1);
       }
     }
   }
@@ -266,13 +268,7 @@ void SAXS::calculate(){
     }
     val->set(sum[k]);
     setBoxDerivatives(val, -deriv_box);
-
-    if(rescale){
-      std::string num; Tools::convert(k,num);
-      Value* comp=getPntrToComponent("exp_"+num); comp->set(1);
-    }
   }
-
 }
 
 void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long double> > &parameter)

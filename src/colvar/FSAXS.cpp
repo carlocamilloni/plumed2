@@ -56,6 +56,7 @@ private:
   bool                     serial;
   bool                     verbose;
   bool                     fixedq;
+  bool                     ocentered;
   unsigned                 numq;
   int      		   truncation;
   vector<double>           q_list;
@@ -89,6 +90,7 @@ void FSAXS::registerKeywords(Keywords& keys){
   keys.addFlag("SERIAL",false,"Perform the calculation in serial - for debug purpose");
   keys.addFlag("VERBOSE",false,"log truncation number for each q_value - for debug purpose");
   keys.addFlag("FIXEDQ",false,"use same truncation for each q_value - for debug purpose");
+  keys.addFlag("OCENTERED",false,"readjust the maximum distance in the system to encompass negative coordinates");
   keys.addFlag("ATOMISTIC",false,"calculate SAXS for an atomistic model");
   keys.add("atoms","ATOMS","The atoms to be included in the calculation, e.g. the whole protein.");
   keys.add("compulsory","NUMQ","Number of used q values");
@@ -113,6 +115,7 @@ serial(false)
   parseFlag("SERIAL",serial);
   parseFlag("VERBOSE",verbose);
   parseFlag("FIXEDQ",fixedq);
+  parseFlag("OCENTERED",ocentered);
 //no pbcs used
   bool nopbc=!pbc;
   parseFlag("NOPBC",nopbc);
@@ -226,9 +229,7 @@ void FSAXS::calculate(){
   if(pbc) makeWhole();
 
 //parameter for dynamic truncation. Assumes that the user chose the truncation according to formula (24) in Gumerov et al. 2012
-  maxdist=truncation/(q_list[numq-1]);
-  log<<"maxq "<<q_list[numq-1]/10<<"\n";
-  log<<"maxdist "<<maxdist<<"\n";
+
 
 //get parameters for mpi parallelization
   unsigned stride=comm.Get_size();
@@ -249,56 +250,87 @@ void FSAXS::calculate(){
 
 //creates a vector of atomic positions in polar coordinates
   vector<Vector> polar(size);
-  for(unsigned i=rank;i<size;i+=stride) {
+  double max=0;
+  double min=100000;
+#pragma omp parallel for num_threads(OpenMP::getNumThreads())
+  for(unsigned i=0;i<size;i++) {
 //r
     polar[i][0]=sqrt(getPosition(i)[0]*getPosition(i)[0]+getPosition(i)[1]*getPosition(i)[1]+getPosition(i)[2]*getPosition(i)[2]);
+    if(polar[i][0] > max) max = polar[i][0];
+    if(polar[i][0] < min) min = polar[i][0];
 //cos(theta)
     polar[i][1]=getPosition(i)[2]/polar[i][0];
 //phi
     polar[i][2]=atan2(getPosition(i)[1],getPosition(i)[0]);
   }
-
-//as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
-vector<Vector2d>                             qRnm(p2*size);
-for(unsigned int i=rank;i<size;i+=stride) {
-  for(int n=0;n<truncation;n+=1) {
-    for(int m=0;m<(n+1);m++) {
-      int order             = m  - n;
-      int x                 = p2 * i + n  * n + m;
-      double gsl            =      gsl_sf_legendre_sphPlm(n,abs(order),polar[i][1]);
-//real part of the spherical basis function of order m, degree n of atom i
-      qRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
-//imaginary part of the spherical basis function of order m, degree n of atom i
-      qRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
-      }
-    }
-  }
-//0 if Middleman is cheaper, 1 if direct calculation is cheaper
-  vector<bool> algorithm(numq); 
+  maxdist=max-min;
+  if(ocentered) maxdist *= 2;
+  log<<"maxq "<<q_list[numq-1]<<"1/nm\n";
+  log<<"maxdist "<<maxdist<<" nm\n";
+  int algorithm=0; 
+  vector<int> trunc(numq);
 //sum over qvalues
   for (int k=numq-1; k>=0; k--) {
-//clear vectors for profile, derivatives and coefficients
-    const unsigned kN  = k * size;
-
 //dynamically set the truncation according to the scattering wavenumber.
-    int trunc=truncation;
+    trunc[k]=truncation;
     if(!fixedq)  {
-    double qa = maxdist*(q_list[k] + sqrt(q_list[k]));
-    trunc=(int)qa;
-    if(truncation<trunc) trunc=truncation;
-    if(trunc<15)         trunc=15;
+      double qa = maxdist*q_list[k];
+      trunc[k]=(int)qa;
+      if(truncation<trunc[k]) trunc[k] = truncation;
+      if(trunc[k]<15)         trunc[k] = 15;
     }
-    double p22=trunc*trunc;
-    if(verbose) log<<trunc<<"\n";
-    //if(unsigned(p22*1.15)>size) algorithm[k]=1;
-    if(trunc>truncation/2) algorithm[k]=1;
-   if(!algorithm[k]) {
-     //log<<algorithm[k]<<" Middleman\n";
+    if(verbose) log<<trunc[k]<<"\n";
+    if(trunc[k]<truncation/2 && algorithm==0) algorithm=k;
+  }
+
+  vector<Vector2d>                             qRnm(p2*size);
+//as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
+    for(unsigned int i=rank;i<size;i+=stride) {
+      for(int n=0;n<truncation;n+=1) {
+        for(int m=0;m<(n+1);m++) {
+          int order             = m  - n;
+          int x                 = p2 * i + n  * n + m;
+          double gsl            =      gsl_sf_legendre_sphPlm(n,abs(order),polar[i][1]);
+//real part of the spherical basis function of order m, degree n of atom i
+          qRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
+//imaginary part of the spherical basis function of order m, degree n of atom i
+          qRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
+          }
+        }
+      }
+#pragma omp parallel for num_threads(OpenMP::getNumThreads())
+  for (int k=numq-1; k>=algorithm; k--) {
+    const unsigned kN  = k * size;
+//calculation via direct Debye summation
+    for (unsigned i=rank; i<size-1; i+=stride) {
+      const double FF=2.*FF_value[k][i];
+      const Vector posi=getPosition(i);
+      Vector dsum;
+      for (unsigned j=i+1; j<size ; j++) {
+        const Vector c_distances = delta(posi,getPosition(j));
+        const double m_distances = c_distances.modulo();
+        const double qdist       = q_list[k]*m_distances;
+        const double FFF = FF*FF_value[k][j];
+        const double tsq = FFF*sin(qdist)/qdist;
+        const double tcq = FFF*cos(qdist);
+        const double tmp = (tcq-tsq)/(m_distances*m_distances);
+        const Vector dd  = c_distances*tmp;
+        dsum         += dd;
+        deriv[kN+j] += dd;
+        I[k]       += tsq;
+      }
+      deriv[kN+i] -= dsum;
+    }
+  }
+
+  for (int k=algorithm-1; k>=0; k--) {
+    const unsigned kN  = k * size;
+    double p22=trunc[k]*trunc[k];
 //double sum over the p^2 expansion terms
     vector<Vector2d>                             Bnm(p22);
     for(unsigned int i=rank;i<size;i+=stride) {
       double pq =polar[i][0]* q_list[k];
-      for(int n=trunc-1;n>=0;n-=1) {
+      for(int n=trunc[k]-1;n>=0;n-=1) {
 //the spherical bessel functions do not depend on the order and are therefore precomputed here
         double bessel           = gsl_sf_bessel_jl(n,pq);
 //here conj(R(m,n))=R(-m,n) is used to decrease the terms in the sum over m by a factor of two
@@ -325,7 +357,7 @@ for(unsigned int i=rank;i<size;i+=stride) {
 //calculate expansion coefficients for the derivatives
   vector<Vector2d>	                         a(3*p22);
   for(unsigned int i=rank;i<size;i+=stride) {
-    for(int n=0;n<trunc-1;n++) {
+    for(int n=0;n<trunc[k]-1;n++) {
       for(int m=0;m<(2*n)+1;m++) {
         int t        =3*(n * n + m);
         a[t]        += FF_value[k][i] * dXHarmonics(k,i,n,m,qRnm);
@@ -340,7 +372,7 @@ for(unsigned int i=rank;i<size;i+=stride) {
   }
 
 //calculation of the scattering profile I of the kth scattering wavenumber q
-  for(int n=rank;n<trunc;n+=stride) {
+  for(int n=rank;n<trunc[k];n+=stride) {
     for(int m=0;m<(2*n)+1;m++) {
       int s          = n * n + m;
       I[k]          += Bnm[s][0] * Bnm[s][0] + Bnm[s][1] * Bnm[s][1];
@@ -353,7 +385,7 @@ for(unsigned int i=rank;i<size;i+=stride) {
       Vector             dPsi;
       int s               = p2 * i;
       double pq           = polar[i][0]* q_list[k];
-      for(int n=trunc-1;n>=0;n--) {
+      for(int n=trunc[k]-1;n>=0;n--) {
         double bessel           = gsl_sf_bessel_jl(n,pq);
         for(int m=0;m<(2*n)+1;m++) {
           int y           = n  * n + m  + s;
@@ -367,31 +399,8 @@ for(unsigned int i=rank;i<size;i+=stride) {
       deriv[kN+i]        += FF_value[k][i] * dPsi;
     }
   }
-//calculation via direct Debye summation
-      if(algorithm[k])  {
-      //log<<algorithm[k]<<" Direct calculation\n";
-      for (unsigned i=rank; i<size-1; i+=stride) {
-        const double FF=2.*FF_value[k][i];
-        const Vector posi=getPosition(i);
-        Vector dsum;
-        for (unsigned j=i+1; j<size ; j++) {
-          const Vector c_distances = delta(posi,getPosition(j));
-          const double m_distances = c_distances.modulo();
-          const double qdist       = q_list[k]*m_distances;
-          const double FFF = FF*FF_value[k][j];
-          const double tsq = FFF*sin(qdist)/qdist;
-          const double tcq = FFF*cos(qdist);
-          const double tmp = (tcq-tsq)/(m_distances*m_distances);
-          const Vector dd  = c_distances*tmp;
-          dsum         += dd;
-          deriv[kN+j] += dd;
-          I[k]       += tsq;
-        }
-        deriv[kN+i] -= dsum;
-      }
-    }
 //end of the k loop
-  }
+  //}
 
   if(!serial) {
     comm.Sum(&I[0],               numq);
@@ -399,24 +408,32 @@ for(unsigned int i=rank;i<size;i+=stride) {
   }
 
 //output (box)derivatives and scattering profile
-  for(unsigned k=0; k<numq; k++) {
-  log<<algorithm[k];
-  Tensor                               deriv_box;
+log<<"turning point "<<algorithm<<"\n";
+#pragma omp parallel for num_threads(OpenMP::getNumThreads())
+  for(int k=0; k<algorithm; k++) {
+    Tensor                               deriv_box;
     const unsigned kN     = k * size;
     Value* val            = getPntrToComponent(k);
     for(unsigned i=0; i<size; i++) {
-      if(algorithm[k]==1) setAtomsDerivatives(val, i, deriv[kN+i]);
-      else                setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
+      setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
       deriv_box += Tensor(getPosition(i),deriv[kN+i]);
     }
-    if(algorithm[k]==1) { 
-      I[k]+=FF_rank[k];
-      setBoxDerivatives(val, -deriv_box);
+    I[k]                  = 4 * M_PI*I[k];
+    setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
+    val->set(I[k]);
+  }
+
+#pragma omp parallel for num_threads(OpenMP::getNumThreads())
+  for(unsigned k=algorithm; k<numq; k++) {
+    Tensor                  deriv_box;
+    const unsigned kN     = k * size;
+    Value* val            = getPntrToComponent(k);
+    for(unsigned i=0; i<size; i++) { 
+      setAtomsDerivatives(val, i, deriv[kN+i]);
+      deriv_box += Tensor(getPosition(i),deriv[kN+i]);
     }
-    else {
-      I[k]                  = 4 * M_PI*I[k];
-      setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
-    }
+    I[k]+=FF_rank[k];
+    setBoxDerivatives(val, -deriv_box);
     val->set(I[k]);
   }
 }

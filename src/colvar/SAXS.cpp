@@ -356,7 +356,7 @@ void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long
           parameter[i].push_back(10.698);
           parameter[i].push_back(-0.0233493);
           parameter[i].push_back(1.18257);
-          parameter[i].push_back(0.0684463);
+          parameter[i].push_back(0.0684464);
           parameter[i].push_back(-2.792);
           parameter[i].push_back(1.88995);
           parameter[i].push_back(-0.360229);
@@ -470,12 +470,18 @@ void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long
       } else if(Rname=="LEU") {
         if(Aname=="BB") {
           parameter[i].push_back(10.692);
-          parameter[i].push_back(-0.209448);
-          parameter[i].push_back(1.73738);
-          parameter[i].push_back(-1.33726);
-          parameter[i].push_back(-1.3065);
-          parameter[i].push_back(1.25273);
-          parameter[i].push_back(-0.265001);
+          parameter[i].push_back(-0.0414917);
+          parameter[i].push_back(1.1077);
+          parameter[i].push_back(-0.288062);
+          parameter[i].push_back(-2.17187);
+          parameter[i].push_back(1.59879);
+          parameter[i].push_back(-0.318545);
+//        parameter[i].push_back(-0.209448);
+//        parameter[i].push_back(1.73738);
+//        parameter[i].push_back(-1.33726);
+//        parameter[i].push_back(-1.3065);
+//        parameter[i].push_back(1.25273);
+//        parameter[i].push_back(-0.265001);
         } else if(Aname=="SC1"){
           parameter[i].push_back(-4.448);
           parameter[i].push_back(2.1063);
@@ -532,9 +538,9 @@ void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long
       } else if(Rname=="PHE") {
         if(Aname=="BB") {
           parameter[i].push_back(10.741);
-          parameter[i].push_back(-0.0317276);
+          parameter[i].push_back(-0.0317275);
           parameter[i].push_back(1.15599);
-          parameter[i].push_back(0.0276186);
+          parameter[i].push_back(0.0276187);
           parameter[i].push_back(-2.74757);
           parameter[i].push_back(1.88783);
           parameter[i].push_back(-0.363525);
@@ -561,7 +567,7 @@ void SAXS::getMartiniSFparam(const vector<AtomNumber> &atoms, vector<vector<long
           parameter[i].push_back(2.29623);
           parameter[i].push_back(-4.76592);
           parameter[i].push_back(1.97055);
-          parameter[i].push_back(-0.26238);
+          parameter[i].push_back(-0.262381);
         } else error("Atom name not known");
       } else if(Rname=="PRO") {
         if(Aname=="BB") {
@@ -802,7 +808,7 @@ void SAXS::calculateASF(const vector<AtomNumber> &atoms, vector<vector<long doub
            const double s = q / (4. * M_PI);
            FF_tmp[k][i] = param_c[index];
            // SUM [a_i * EXP( - b_i * (q/4pi)^2 )] Waasmaier and Kirfel (1995)
-           for(unsigned j=0;j<5;j++) {
+           for(unsigned j=0;j<4;j++) {
              FF_tmp[k][i] += param_a[index][j]*exp(-param_b[index][j]*s*s);
            }
            // subtract solvation: rho * v_i * EXP( (- v_i^(2/3) / (4pi)) * q^2  )

@@ -998,7 +998,7 @@ double Metainference::getEnergyForceSP(const vector<double> &mean, const double 
   const double mod2   = modifier*modifier; /* this is now modifiers */
   const double scale2 = scale_*scale_;
   const double sm2    = mod2*scale2*sigma_mean_[0]*sigma_mean_[0]; 
-  const double ss2    = scale2*sigma_[0]*sigma_[0] + sm2;
+  const double ss2    = sigma_[0]*sigma_[0] + sm2;
   vector<double> f(narg+1,0);
   
   if(master){
@@ -1053,7 +1053,7 @@ double Metainference::getEnergyForceSPE(const vector<double> &mean, const double
       #pragma omp for reduction( + : omp_ene)
       for(unsigned i=0;i<narg;++i){
         const double sm2 = mod2*scale2*sigma_mean_[i]*sigma_mean_[i]; 
-        const double ss2 = scale2*sigma_[i]*sigma_[i] + sm2;
+        const double ss2 = sigma_[i]*sigma_[i] + sm2;
         const double dev = scale_*mean[i]-parameters[i]+offset_; 
         const double a2  = 0.5*dev*dev + ss2;
         const double t   = exp(-a2/sm2);
@@ -1093,7 +1093,7 @@ double Metainference::getEnergyForceGJ(const vector<double> &mean, const double 
   double inv_s2;
 
   if(master) {
-    inv_s2 = 1./(scale2*sigma_[0]*sigma_[0] + mod2*scale2*sigma_mean_[0]*sigma_mean_[0]);
+    inv_s2 = 1./(sigma_[0]*sigma_[0] + mod2*scale2*sigma_mean_[0]*sigma_mean_[0]);
     if(nrep_>1) multi_sim_comm.Sum(inv_s2);
   } else {
     inv_s2 = 0.;
@@ -1129,7 +1129,7 @@ double Metainference::getEnergyForceGJE(const vector<double> &mean, const double
   vector<double> inv_s2(sigma_.size());
 
   if(master) {
-    for(unsigned i=0;i<sigma_.size(); ++i) inv_s2[i] = 1./(scale2*sigma_[i]*sigma_[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
+    for(unsigned i=0;i<sigma_.size(); ++i) inv_s2[i] = 1./(sigma_[i]*sigma_[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
     if(nrep_>1) multi_sim_comm.Sum(&inv_s2[0],sigma_.size());
   } else { 
     for(unsigned i=0;i<sigma_.size(); ++i) inv_s2[i] = 0.;

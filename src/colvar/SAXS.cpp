@@ -802,7 +802,7 @@ void SAXS::calculateASF(const vector<AtomNumber> &atoms, vector<vector<long doub
        if(AA_map.find(type_s) != AA_map.end()){
          const unsigned index=AA_map[type_s];
          const double rho = 0.334;
-         const double volr = pow(param_v[index], (2.0/3.0)) /(16. * M_PI);
+         const double volr = pow(param_v[index], (2.0/3.0)) /(4. * M_PI);
          for(unsigned k=0;k<numq;++k){
            const double q = q_list[k];
            const double s = q / (4. * M_PI);
@@ -811,7 +811,7 @@ void SAXS::calculateASF(const vector<AtomNumber> &atoms, vector<vector<long doub
            for(unsigned j=0;j<4;j++) {
              FF_tmp[k][i] += param_a[index][j]*exp(-param_b[index][j]*s*s);
            }
-           // subtract solvation: rho * v_i * EXP( (- v_i^(2/3) / (4pi)) * q^2  )
+           // subtract solvation: rho * v_i * EXP( (- v_i^(2/3) / (4pi)) * q^2  ) // since  D in Fraser 1978 is 2*s 
            FF_tmp[k][i] -= rho*param_v[index]*exp(-volr*q*q);
          }
        } else {

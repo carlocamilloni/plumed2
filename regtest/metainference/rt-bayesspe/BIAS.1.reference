@@ -1,4 +1,4 @@
-#! FIELDS time spe.bias spe.scale spe.accept spe.rewSigmaMean spe.sigmaMean spe.sigma
+#! FIELDS time spe.bias spe.scale spe.acceptScale spe.acceptSigma spe.sigmaMean spe.sigma
  0.000000 46.490060 1.000000 1.000000 1.000000 0.000707 0.010000
  0.005000 47.182659 1.000000 1.000000 1.000000 0.000707 0.010000
  0.010000 46.744649 1.000000 1.000000 1.000000 0.000707 0.010000

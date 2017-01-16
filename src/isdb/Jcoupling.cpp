@@ -19,8 +19,8 @@
    You should have received a copy of the GNU Lesser General Public License
    along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
-#include "Colvar.h"
-#include "ActionRegister.h"
+#include "colvar/Colvar.h"
+#include "colvar/ActionRegister.h"
 #include "core/PlumedMain.h"
 #include "tools/Torsion.h"
 
@@ -30,7 +30,7 @@
 using namespace std;
 
 namespace PLMD{
-    namespace colvar{
+namespace isdb{
 
 //+PLUMEDOC COLVAR JCOUPLING
 /*

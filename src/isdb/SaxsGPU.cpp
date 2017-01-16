@@ -24,8 +24,8 @@
  by Carlo Camilloni 
 */
 
-#include "Colvar.h"
-#include "ActionRegister.h"
+#include "colvar/Colvar.h"
+#include "colvar/ActionRegister.h"
 #include "tools/Communicator.h"
 #include "tools/OpenMP.h"
 
@@ -40,7 +40,7 @@
 using namespace std;
 
 namespace PLMD{
-namespace colvar{
+namespace isdb{
 
 //+PLUMEDOC COLVAR SAXSGPU
 /*

@@ -1219,6 +1219,7 @@ void Metainference::calculate()
         if(nrep_>1) multi_sim_comm.Sum(&v_moment[0], narg);
       }
       comm.Sum(&v_moment[0], narg);
+      for(unsigned i=0;i<narg;++i) v_moment[i] /= dnrep;
     }
 
     const double sq_dnrep = sqrt(dnrep);

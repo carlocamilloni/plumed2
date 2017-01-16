@@ -20,6 +20,8 @@
    along with plumed.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 
+/* This class was originally written by Thomas Loehr */
+
 #include "Colvar.h"
 #include "ActionRegister.h"
 #include "core/ActionSet.h"

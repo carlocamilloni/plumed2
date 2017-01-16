@@ -683,9 +683,9 @@ double Metainference::getEnergySP(const vector<double> &mean, const vector<doubl
 {
   const double scale2 = scale*scale;
   const double mod2   = modifier*modifier;
-  const double sm2    = scale2*mod2*sigma_mean_[0]*sigma_mean_[0];
-  const double ss2    = sigma[0]*sigma[0] + sm2;
-  const double sss    = sigma[0]*sigma[0] + mod2*sigma_mean_[0]*sigma_mean_[0];
+  const double sm2    = mod2*sigma_mean_[0]*sigma_mean_[0];
+  const double ss2    = sigma[0]*sigma[0] + scale2*sm2;
+  const double sss    = sigma[0]*sigma[0] + sm2;
 
   double ene = 0.0;
   #pragma omp parallel num_threads(OpenMP::getNumThreads()) shared(ene)
@@ -714,9 +714,9 @@ double Metainference::getEnergySPE(const vector<double> &mean, const vector<doub
   {
     #pragma omp for reduction( + : ene)
     for(unsigned i=0;i<narg;++i){
-      const double sm2 = scale2*mod2*sigma_mean_[i]*sigma_mean_[i];
-      const double ss2 = sigma[i]*sigma[i] + sm2;
-      const double sss = sigma[i]*sigma[i] + mod2*sigma_mean_[i]*sigma_mean_[i];
+      const double sm2 = mod2*sigma_mean_[i]*sigma_mean_[i];
+      const double ss2 = sigma[i]*sigma[i] + scale2*sm2;
+      const double sss = sigma[i]*sigma[i] + sm2;
       const double dev = scale*mean[i]-parameters[i]+offset; 
       const double a2  = 0.5*dev*dev + ss2;
       ene += std::log(sss) + 0.5*std::log(0.5*M_PI*M_PI/ss2) + std::log(2.0*a2/(1.0-exp(-a2/sm2)));
@@ -744,8 +744,8 @@ double Metainference::getEnergyGJ(const vector<double> &mean, const vector<doubl
       ene += 0.5*dev*dev*inv_s2;
     }
   }
-  const double normalisation = -0.5*std::log(scale2*inv_s2);
-  const double jeffreys = -0.5*std::log(inv_sss);
+  const double normalisation = -0.5*std::log(0.5/M_PI*inv_s2);
+  const double jeffreys = -0.5*std::log(2.*inv_sss);
   // add Jeffrey's prior in case one sigma for all data points + one normalisation per datapoint
   ene += jeffreys + static_cast<double>(narg)*normalisation;
   if(doscale_)  ene += jeffreys;
@@ -769,8 +769,8 @@ double Metainference::getEnergyGJE(const vector<double> &mean, const vector<doub
       const double inv_sss = 1./(sigma[i]*sigma[i] + mod2*sigma_mean_[i]*sigma_mean_[i]);
       double dev = scale*mean[i]-parameters[i]+offset;
       // deviation + normalisation + jeffrey
-      const double normalisation = -0.5*std::log(scale2*inv_s2);
-      const double jeffreys      = -0.5*std::log(inv_sss);
+      const double normalisation = -0.5*std::log(0.5/M_PI*inv_s2);
+      const double jeffreys      = -0.5*std::log(2.*inv_sss);
       ene += 0.5*dev*dev*inv_s2 + normalisation + jeffreys;
       if(doscale_)  ene += jeffreys;
       if(dooffset_) ene += jeffreys;

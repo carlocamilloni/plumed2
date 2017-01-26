@@ -55,6 +55,7 @@ private:
   bool                     serial;
   bool                     rescale;
   unsigned                 numq;
+  double                   scexp;
   vector<double>           q_list;
   vector<vector<double> >  FF_value;
   vector<double>           FF_rank;
@@ -105,7 +106,8 @@ serial(false)
   parse("NUMQ",numq);
   if(numq==0) error("NUMQ must be set");  
 
-  double scexp = 0;
+  //double scexp = 0;
+  scexp = 0;
   parse("SCEXP",scexp);
   if(scexp==0) scexp=1.0;  
 
@@ -183,7 +185,8 @@ serial(false)
       addComponent("exp_"+num);
       componentIsNotPeriodic("exp_"+num);
       if(rescale==false) { //rescale
-        Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]*scexp);
+//        Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]*scexp);
+        Value* comp=getPntrToComponent("exp_"+num); comp->set(expint[i]);
       } else {
         expint[i]=expint[i]*scexp;
         std::string num; Tools::convert(i,num);
@@ -258,15 +261,15 @@ void SAXS::calculate(){
     Value* val=getPntrToComponent(k);
     Tensor deriv_box;
     for(unsigned i=0; i<size; i++) { 
-      setAtomsDerivatives(val, i, deriv[kdx+i]);
-      deriv_box += Tensor(getPosition(i),deriv[kdx+i]);
+      setAtomsDerivatives(val, i, deriv[kdx+i]/scexp);
+      deriv_box += Tensor(getPosition(i),deriv[kdx+i]/scexp);
     }
     if(rescale){
       sum[k]+=FF_rank[k]/expint[k];
     } else {
       sum[k]+=FF_rank[k];
     }
-    val->set(sum[k]);
+    val->set(sum[k]/scexp);
     setBoxDerivatives(val, -deriv_box);
   }
 }

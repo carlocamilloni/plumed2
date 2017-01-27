@@ -214,7 +214,8 @@ class Metainference : public bias::Bias
   double getEnergyForceSP(const vector<double> &mean, const double fact, const double modifier);
   double getEnergyForceSPE(const vector<double> &mean, const double fact, const double modifier);
   double getEnergyForceGJ(const vector<double> &mean, const double fact, const double modifier);
-  double getEnergyForceGJE(const vector<double> &mean, const double fact, const double modifier);
+  double getEnergyForceGJE(const vector<double> &mean, const vector<double> &dmean_x, const vector<double> &dmean_b, 
+                           const vector<double> &dsigma_mean2_x, const vector<double> &dsigma_mean2_b, const double modifier);
   void   writeStatus();
   
 public:
@@ -1130,38 +1131,45 @@ double Metainference::getEnergyForceGJ(const vector<double> &mean, const double 
   return kbt_*ene;
 }
 
-double Metainference::getEnergyForceGJE(const vector<double> &mean, const double fact, const double modifier)
+double Metainference::getEnergyForceGJE(const vector<double> &mean, const vector<double> &dmean_x, const vector<double> &dmean_b, 
+                                        const vector<double> &dsigma_mean2_x, const vector<double> &dsigma_mean2_b, const double modifier)
 {
-  const double mod2   = modifier*modifier;
-  const double scale2 = scale_*scale_;
-  vector<double> inv_s2(sigma_.size());
+  const double   mod2   = modifier*modifier;
+  const double   scale2 = scale_*scale_;
+  vector<double> inv_s2(sigma_.size(),0.);
+  vector<double> inv2_s2(sigma_.size(),0.);
 
   if(master) {
-    for(unsigned i=0;i<sigma_.size(); ++i) inv_s2[i] = 1./(sigma_[i]*sigma_[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
-    if(nrep_>1) multi_sim_comm.Sum(&inv_s2[0],sigma_.size());
-  } else { 
-    for(unsigned i=0;i<sigma_.size(); ++i) inv_s2[i] = 0.;
+    for(unsigned i=0;i<sigma_.size(); ++i) {
+      inv_s2[i]  = 1./(sigma_[i]*sigma_[i] + scale2*mod2*sigma_mean_[i]*sigma_mean_[i]);
+      inv2_s2[i] = inv_s2[i]*inv_s2[i];
+    }
+    if(nrep_>1) {
+      multi_sim_comm.Sum(&inv_s2[0],sigma_.size());
+      multi_sim_comm.Sum(&inv2_s2[0],sigma_.size());
+    }
   }
   comm.Sum(&inv_s2[0],sigma_.size());  
-  
-  double ene   = 0.;
-  double w_tmp = 0.;
-  #pragma omp parallel num_threads(OpenMP::getNumThreads()) shared(ene,w_tmp)
+  comm.Sum(&inv2_s2[0],sigma_.size());  
+ 
+  double dene_b = 0.;
+  double ene    = 0.;
+  #pragma omp parallel num_threads(OpenMP::getNumThreads()) shared(ene,dene_b)
   { 
-    #pragma omp for reduction( + : ene,w_tmp)
+    #pragma omp for reduction( + : ene,dene_b)
     for(unsigned i=0;i<narg;++i){
-      const double dev  = scale_*mean[i]-parameters[i]+offset_;
-      const double mult = fact*dev*scale_*inv_s2[i];
+      const double dev = scale_*mean[i]-parameters[i]+offset_;
+      const double dene_x  = (kbt_*scale_*dev*inv_s2[i]*dmean_x[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_x[i]);
+                   dene_b += (kbt_*scale_*dev*inv_s2[i]*dmean_b[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_b[i]);
       ene += 0.5*dev*dev*inv_s2[i];
-      setOutputForce(i, -kbt_*mult);
-      w_tmp += (getArgument(i)-mean[i])*mult;
+      setOutputForce(i, -dene_x);
     }
   }
 
   if(do_reweight) {
-    setOutputForce(narg, -w_tmp);
-    getPntrToComponent("MetaDf")->set(w_tmp);
-    getPntrToComponent("weight")->set(fact);
+    setOutputForce(narg, -dene_b);
+    getPntrToComponent("MetaDf")->set(dene_b);
+    getPntrToComponent("weight")->set(dmean_x[0]);
   }
 
   return kbt_*ene;
@@ -1171,9 +1179,11 @@ void Metainference::calculate()
 {
   const double dnrep = static_cast<double>(nrep_);
   double norm        = 0.0;
+  double vnorm       = 0.0;
   double fact        = 0.0;
-  double ave_fact    = 1.0/dnrep;
-  double var_fact    = 0.0;
+  vector<double> sigma_mean2(narg,0);
+  vector<double> dsigma_mean2_x(narg,0);
+  vector<double> dsigma_mean2_b(narg,0);
 
   if(do_reweight){
     // calculate the weights either from BIAS 
@@ -1188,8 +1198,8 @@ void Metainference::calculate()
       bias[i] = exp((bias[i]-maxbias)/kbt_); 
       norm   += bias[i];
     }
+    for(unsigned i=0;i<nrep_;++i) vnorm += (bias[i]/norm)*(bias[i]/norm);
     fact = bias[replica_]/norm;
-    for(unsigned i=0;i<nrep_;++i) var_fact += (bias[i]/norm-ave_fact)*(bias[i]/norm-ave_fact);
   } else {
     // or arithmetic ones
     norm = dnrep; 
@@ -1198,27 +1208,42 @@ void Metainference::calculate()
 
   // calculate the mean 
   vector<double> mean(narg,0);
+  vector<double> dmean_x(narg,fact);
+  vector<double> dmean_b(narg,0);
   if(master) {
     for(unsigned i=0;i<narg;++i) mean[i] = fact*getArgument(i); 
     if(nrep_>1) multi_sim_comm.Sum(&mean[0], narg);
   }
   comm.Sum(&mean[0], narg);
+  for(unsigned i=0;i<narg;++i) dmean_b[i] = fact/kbt_*(getArgument(i)-mean[i]);
 
   if(do_optsigmamean_>0) {
-    vector<double> v_moment(narg,0);
-    vector<double> v_tmp(narg,0);
+    vector<double> v_tmp1(narg,0);
+    vector<double> v_tmp2(narg,0);
     if(do_reweight) {
       if(master) {
         for(unsigned i=0;i<narg;++i) { 
-          double tmp1 = (fact*getArgument(i)-ave_fact*mean[i])*(fact*getArgument(i)-ave_fact*mean[i]); 
-          double tmp2 = -2.*mean[i]*(fact-ave_fact)*(fact*getArgument(i)-ave_fact*mean[i]);
-          v_tmp[i] = tmp1 + tmp2;
+          v_tmp1[i] = fact*(getArgument(i)-mean[i])*(getArgument(i)-mean[i]);
+          v_tmp2[i] = fact*(getArgument(i)-mean[i]);
         }
-        if(nrep_>1) multi_sim_comm.Sum(&v_tmp[0], narg);
+        if(nrep_>1) {
+          multi_sim_comm.Sum(&v_tmp1[0], narg);
+          multi_sim_comm.Sum(&v_tmp2[0], narg);
+        }
       }
-      comm.Sum(&v_tmp[0], narg);
-      for(unsigned i=0;i<narg;++i) v_moment[i] = dnrep/(dnrep-1.)*(v_tmp[i] + mean[i]*mean[i]*var_fact);
+      comm.Sum(&v_tmp1[0], narg);
+      comm.Sum(&v_tmp2[0], narg);
+      for(unsigned i=0;i<narg;++i) {
+        sigma_mean2[i] = vnorm/(1.-vnorm)*v_tmp1[i];
+        dsigma_mean2_x[i] = 2.*vnorm/(1.-vnorm)*(-v_tmp2[i]*dmean_x[i]+fact*(getArgument(i)-mean[i]));
+        double part1 = +2.*vnorm/((1.-vnorm)*(1.-vnorm)*kbt_)*(-fact*fact+fact*vnorm)*v_tmp1[i];
+        double part2 = +2./((1.-vnorm)*kbt_)*fact*fact*v_tmp1[i];
+        double part3 = -2.*vnorm*fact/((1.-vnorm)*kbt_)*v_tmp1[i];
+        double part4 = +2.*vnorm/((1.-vnorm))*(-fact*v_tmp1[i]/kbt_+fact/kbt_*(getArgument(i)-mean[i])*(getArgument(i)-mean[i])-2.*dmean_b[i]*v_tmp2[i]);
+        dsigma_mean2_b[i] = part1+part2+part3+part4;
+      }
     } else {
+/*
       if(master) {
         for(unsigned i=0;i<narg;++i) { 
           double tmp  = getArgument(i)-mean[i];
@@ -1228,40 +1253,24 @@ void Metainference::calculate()
       }
       comm.Sum(&v_moment[0], narg);
       for(unsigned i=0;i<narg;++i) v_moment[i] /= dnrep;
+*/
     }
 
     const double sq_dnrep = sqrt(dnrep);
-    bool sm_update = false;
     for(unsigned i=0;i<narg;++i) {
-      /* if this is larger than the old one we update it */ 
-      if(v_moment[i]>variance_[i]) {
-        sm_update = true;
-        variance_[i] = v_moment[i];
         if(noise_type_==MGAUSS||noise_type_==MOUTLIERS) {
           /* this is the variance */
-          const double s_v = sqrt(variance_[i])*sq_dnrep;
+          sigma_mean_[i] = sqrt(sigma_mean2[i]);
+          const double s_v = sigma_mean_[i]*sq_dnrep;
           /* if sigma_max is less than the variance we increase it and increase Dsigma accordingly */
           if(sigma_max_[i] < s_v) {
             Dsigma_[i] *= s_v/sigma_max_[i]; 
             sigma_max_[i] = s_v;
           }
-          /* we go back to the standard error of the mean */
-          sigma_mean_[i] = s_v/sq_dnrep;
+          sigma_min_[i] = sigma_mean_[i];
+          if(sigma_[i] < sigma_min_[i]) sigma_[i] = sigma_min_[i];
           valueSigmaMean[i]->set(sigma_mean_[i]);
         }
-      }
-    }
-    if(sm_update&&(noise_type_==GAUSS||noise_type_==OUTLIERS)) {
-      /* this is the variance */
-      const double s_v = sqrt(*max_element(variance_.begin(), variance_.end()))*sq_dnrep;
-      /* if sigma_max is less than the variance we increase it and increase Dsigma accordingly */
-      if(sigma_max_[0] < s_v) {
-        Dsigma_[0] *= s_v/sigma_max_[0]; 
-        sigma_max_[0] = s_v;
-      }
-      /* we go back to the standard error of the mean */
-      sigma_mean_[0] = s_v/sq_dnrep;
-      valueSigmaMean[0]->set(sigma_mean_[0]);
     }
   }
 
@@ -1281,7 +1290,7 @@ void Metainference::calculate()
       ene = getEnergyForceGJ(mean, fact, sigma_mean_modifier);
       break;
     case MGAUSS:
-      ene = getEnergyForceGJE(mean, fact, sigma_mean_modifier);
+      ene = getEnergyForceGJE(mean, dmean_x, dmean_b, dsigma_mean2_x, dsigma_mean2_b, sigma_mean_modifier);
       break;
     case OUTLIERS:
       ene = getEnergyForceSP(mean, fact, sigma_mean_modifier);

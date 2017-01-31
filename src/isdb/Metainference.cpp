@@ -1208,20 +1208,32 @@ double Metainference::getEnergyForceGJE(const vector<double> &mean, const vector
   const double   mod2   = modifier*modifier;
   const double   scale2 = scale_*scale_;
   vector<double> inv_s2(sigma_.size(),0.);
+  vector<double> inv_ss(sigma_.size(),0.);
   vector<double> inv2_s2(sigma_.size(),0.);
+  vector<double> normg(sigma_.size(),0.);
+  vector<double> jeff(sigma_.size(),0.);
 
   if(master) {
     for(unsigned i=0;i<sigma_.size(); ++i) {
       inv_s2[i]  = 1./(sigma_[i]*sigma_[i] + scale2*mod2*sigma_mean2_[i]);
+      inv_ss[i]  = 1./(sigma_[i]*sigma_[i] + mod2*sigma_mean2_[i]);
       inv2_s2[i] = inv_s2[i]*inv_s2[i];
+      normg[i] = -0.5*std::log(0.5/M_PI*inv_s2[i]);
+      jeff[i]  = -0.5*std::log(2.*inv_ss[i]);
     }
     if(nrep_>1) {
       multi_sim_comm.Sum(&inv_s2[0],sigma_.size());
+      multi_sim_comm.Sum(&inv_ss[0],sigma_.size());
       multi_sim_comm.Sum(&inv2_s2[0],sigma_.size());
+      multi_sim_comm.Sum(&normg[0],sigma_.size());
+      multi_sim_comm.Sum(&jeff[0],sigma_.size());
     }
   }
   comm.Sum(&inv_s2[0],sigma_.size());  
+  comm.Sum(&inv_ss[0],sigma_.size());  
   comm.Sum(&inv2_s2[0],sigma_.size());  
+  comm.Sum(&normg[0],sigma_.size());
+  comm.Sum(&jeff[0],sigma_.size());
  
   double dene_b = 0.;
   double ene    = 0.;
@@ -1230,9 +1242,13 @@ double Metainference::getEnergyForceGJE(const vector<double> &mean, const vector
     #pragma omp for reduction( + : ene,dene_b)
     for(unsigned i=0;i<narg;++i){
       const double dev = scale_*mean[i]-parameters[i]+offset_;
-      const double dene_x  = (kbt_*scale_*dev*inv_s2[i]*dmean_x[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_x[i]);
-                   dene_b += (kbt_*scale_*dev*inv_s2[i]*dmean_b[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_b[i]);
-      ene += 0.5*dev*dev*inv_s2[i];
+      double dene_x  = (kbt_*scale_*dev*inv_s2[i]*dmean_x[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_x[i]);
+             dene_b += (kbt_*scale_*dev*inv_s2[i]*dmean_b[i] - 0.5*kbt_*dev*dev*inv2_s2[i]*scale2*mod2*dsigma_mean2_b[i]);
+             dene_x += 0.5*kbt_*scale2*mod2*inv_s2[i]*dsigma_mean2_x[i];
+             dene_b += 0.5*kbt_*scale2*mod2*inv_s2[i]*dsigma_mean2_b[i];
+             dene_x += 0.5*kbt_*mod2*inv_ss[i]*dsigma_mean2_x[i];
+             dene_b += 0.5*kbt_*mod2*inv_ss[i]*dsigma_mean2_b[i];
+      ene += 0.5*dev*dev*inv_s2[i] + normg[i] + jeff[i];
       setOutputForce(i, -dene_x);
     }
   }
@@ -1251,9 +1267,11 @@ double Metainference::getEnergyForceMGGEN(const vector<double> &mean, const vect
   vector<double> inv_s2(sigma_.size(),0.);
   vector<double> dev(sigma_.size(),0.);
   vector<double> dev2(sigma_.size(),0.);
+  vector<double> normg(sigma_.size(),0.);
 
   for(unsigned i=0;i<sigma_.size(); ++i) {
     inv_s2[i]   = 1./(sigma_mean2_[i]);
+    normg[i]    = -0.5*nrep_*std::log(0.5/M_PI*inv_s2[i]);
     if(master) {
       dev[i]  = (mean[i]-ftilde_[i]);
       dev2[i] = (mean[i]-ftilde_[i])*(mean[i]-ftilde_[i]);
@@ -1272,9 +1290,11 @@ double Metainference::getEnergyForceMGGEN(const vector<double> &mean, const vect
   { 
     #pragma omp for reduction( + : ene,dene_b)
     for(unsigned i=0;i<narg;++i){
-      const double dene_x  = kbt_*inv_s2[i]*dmean_x[i]*dev[i] - 0.5*kbt_*inv_s2[i]*inv_s2[i]*dev2[i]*dsigma_mean2_x[i];
-                   dene_b += kbt_*inv_s2[i]*dmean_b[i]*dev[i] - 0.5*kbt_*inv_s2[i]*inv_s2[i]*dev2[i]*dsigma_mean2_b[i];
-      ene += 0.5*dev2[i]*inv_s2[i];
+      double dene_x  = kbt_*inv_s2[i]*dmean_x[i]*dev[i] - 0.5*kbt_*inv_s2[i]*inv_s2[i]*dev2[i]*dsigma_mean2_x[i];
+             dene_b += kbt_*inv_s2[i]*dmean_b[i]*dev[i] - 0.5*kbt_*inv_s2[i]*inv_s2[i]*dev2[i]*dsigma_mean2_b[i];
+             dene_x += 0.5*kbt_*nrep_*inv_s2[i]*dsigma_mean2_x[i];
+             dene_b += 0.5*kbt_*nrep_*inv_s2[i]*dsigma_mean2_b[i];
+      ene += 0.5*dev2[i]*inv_s2[i] + normg[i];
       setOutputForce(i, -dene_x);
     }
   }

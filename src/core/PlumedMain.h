@@ -1,5 +1,5 @@
 /* +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   Copyright (c) 2011-2016 The plumed team
+   Copyright (c) 2011-2017 The plumed team
    (see the PEOPLE file at the root of the distribution for a list of names)
 
    See http://www.plumed.org for more information.
@@ -28,7 +28,7 @@
 #include <vector>
 #include <set>
 #include <stack>
-
+#include <map>
 
 // !!!!!!!!!!!!!!!!!!!!!!    DANGER   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
 // THE FOLLOWING ARE DEFINITIONS WHICH ARE NECESSARY FOR DYNAMIC LOADING OF THE PLUMED KERNEL:
@@ -144,7 +144,7 @@ private:
   bool stopNow;
 
 /// Stack for update flags.
-/// Store information used in class \ref UpdateIf
+/// Store information used in class \ref generic::UpdateIf
   std::stack<bool> updateFlags;
 
 public:
@@ -153,6 +153,10 @@ public:
 
 /// Flag to switch on detailed timers
   bool detailedTimers;
+
+/// Generic map string -> double
+/// intended to pass information across Actions
+  std::map<std::string,double> passMap;
 
 /// Add a citation, returning a string containing the reference number, something like "[10]"
   std::string cite(const std::string&);

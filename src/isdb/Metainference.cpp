@@ -1313,7 +1313,6 @@ void Metainference::calculate()
   double norm        = 0.0;
   double vnorm       = 0.0;
   double fact        = 0.0;
-  vector<double> sigma_mean2(narg,0);
   vector<double> dsigma_mean2_x(narg,0);
   vector<double> dsigma_mean2_b(narg,0);
 
@@ -1377,7 +1376,7 @@ void Metainference::calculate()
       comm.Sum(&v_tmp1[0], narg);
       comm.Sum(&v_tmp2[0], narg);
       for(unsigned i=0;i<narg;++i) {
-        sigma_mean2[i] = 2.*vnorm/(1.-vnorm)*v_tmp1[i];
+        sigma_mean2_[i] = 2.*vnorm/(1.-vnorm)*v_tmp1[i];
         dsigma_mean2_x[i] = 2.*2.*vnorm/(1.-vnorm)*(-v_tmp2[i]*dmean_x[i]+fact*(getArgument(i)-mean[i]));
         double part1 = +2.*vnorm/((1.-vnorm)*(1.-vnorm)*kbt_)*(-fact*fact+fact*vnorm)*v_tmp1[i];
         double part2 = +2./((1.-vnorm)*kbt_)*fact*fact*v_tmp1[i];
@@ -1389,7 +1388,7 @@ void Metainference::calculate()
       /* standard estimate of sigma_mean currently missing */
     }
 
-    if(noise_type_==MGAUSS||noise_type_==MOUTLIERS) {
+    if(noise_type_==MGAUSS||noise_type_==MOUTLIERS||noise_type_==GENERIC) {
       for(unsigned i=0;i<narg;++i) {
         /* the standard error of the mean */
         valueSigmaMean[i]->set(sqrt(sigma_mean2_[i]));

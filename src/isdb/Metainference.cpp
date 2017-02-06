@@ -206,6 +206,14 @@ class Metainference : public bias::Bias
   unsigned nrep_;
   unsigned replica_;
   unsigned narg;
+  
+  // update sigma_mean
+  bool           do_updatesigmamean_;
+  unsigned       update_stride_;
+  vector<double> sigma_mean_modifier_;
+  unsigned       sigma_mean_modifier_count_;
+  string         selector_;
+  unsigned       iselect_old_;
 
   // we need this for the forces
   Atoms& atoms;
@@ -278,6 +286,9 @@ void Metainference::registerKeywords(Keywords& keys){
   keys.add("optional","MC_CHUNKSIZE","MC chunksize");
   keys.add("optional","STATUS_FILE","write a file with all the data usefull for restart/continuation of Metainference");
   keys.add("compulsory","WRITE_STRIDE","write the status to a file every N steps, this can be used for restart/continuation");
+  keys.add("optional","UPDATESIGMAMEAN","update sigma_mean to correct for unequal weights");
+  keys.add("optional","SELECTOR","name of selector");
+  keys.add("optional","NSELECT","range of values for selector [0, N-1]");
   keys.use("RESTART");
   useCustomisableComponents(keys);
   keys.addOutputComponent("sigma",        "default",      "uncertainty parameter");
@@ -320,6 +331,10 @@ write_stride_(0),
 firstTime(true),
 do_reweight(false),
 do_optsigmamean_(0),
+do_updatesigmamean_(false),
+update_stride_(0),
+sigma_mean_modifier_count_(0),
+iselect_old_(0),
 atoms(plumed.getAtoms())
 {
   // set up replica stuff 
@@ -387,6 +402,20 @@ atoms(plumed.getAtoms())
   if(stringa_optsigma=="NONE")      do_optsigmamean_=0;
   else if(stringa_optsigma=="SEM")  do_optsigmamean_=1;
   else if(stringa_optsigma=="FULL") do_optsigmamean_=2;
+  
+  parse("UPDATESIGMAMEAN", update_stride_);
+  if(update_stride_>0){
+     do_updatesigmamean_ = true;
+     parse("SELECTOR", selector_);
+     unsigned nsel = 1;
+     parse("NSELECT", nsel);
+     if(selector_.length()>0 && nsel<=1) error("With SELECTOR active, NSELECT must be greater than 1");
+     // initialize modifier 
+     for(unsigned i=0; i<nsel; ++i) sigma_mean_modifier_.push_back(1.0);
+  }
+
+  if(do_updatesigmamean_ && do_optsigmamean_>0)
+   error("Cannot update and optimize sigma_mean at the same time");
 
   parseFlag("SCALEDATA", doscale_);
   if(doscale_) {
@@ -490,7 +519,7 @@ atoms(plumed.getAtoms())
     if(read_sigma_mean_.size()==1) {
       sigma_mean2_.resize(1, read_sigma_mean_[0]*read_sigma_mean_[0]);
     } else if(read_sigma_mean_.size()==0) {
-      sigma_mean2_.resize(narg,0.000001);
+      sigma_mean2_.resize(1, 0.000001);
     } else {
       error("If you want to use more than one SIGMA_MEAN0 you should use NOISETYPE=MGAUSS|MOUTLIERS");
     }
@@ -665,6 +694,12 @@ atoms(plumed.getAtoms())
     componentIsNotPeriodic("smMod");
     valueSMmod=getPntrToComponent("smMod");
   }
+  
+  if(do_updatesigmamean_){
+    addComponent("smMod");
+    componentIsNotPeriodic("smMod");
+    valueSMmod=getPntrToComponent("smMod");
+  }
 
   if(noise_type_==MGAUSS||noise_type_==MOUTLIERS||noise_type_==GENERIC) {
     for(unsigned i=0;i<sigma_mean2_.size();++i){
@@ -744,7 +779,7 @@ double Metainference::getEnergySP(const vector<double> &mean, const vector<doubl
     }
   }
   // add one single Jeffrey's prior and one normalisation per data point
-  ene += std::log(sss) + static_cast<double>(narg)*0.5*std::log(0.5*M_PI*M_PI/ss2);
+  ene += 0.5*std::log(sss) + static_cast<double>(narg)*0.5*std::log(0.5*M_PI*M_PI/ss2);
   if(doscale_)  ene += std::log(sss);
   if(dooffset_) ene += std::log(sss);
   return kbt_ * ene;
@@ -765,7 +800,7 @@ double Metainference::getEnergySPE(const vector<double> &mean, const vector<doub
       const double sss = sigma[i]*sigma[i] + sm2;
       const double dev = scale*mean[i]-parameters[i]+offset; 
       const double a2  = 0.5*dev*dev + ss2;
-      ene += std::log(sss) + 0.5*std::log(0.5*M_PI*M_PI/ss2) + std::log(2.0*a2/(1.0-exp(-a2/sm2)));
+      ene += 0.5*std::log(sss) + 0.5*std::log(0.5*M_PI*M_PI/ss2) + std::log(2.0*a2/(1.0-exp(-a2/sm2)));
       if(doscale_)  ene += 0.5*std::log(sss);
       if(dooffset_) ene += 0.5*std::log(sss);
     }
@@ -1324,10 +1359,10 @@ void Metainference::calculate()
   double fact        = 0.0;
   double ave_fact    = 1.0/dnrep;
   double var_fact    = 0.0;
+  vector<double> bias(nrep_,0);
 
   if(do_reweight){
     // calculate the weights either from BIAS 
-    vector<double> bias(nrep_,0);
     if(master){
       bias[replica_] = getArgument(narg); 
       if(nrep_>1) multi_sim_comm.Sum(&bias[0], nrep_);  
@@ -1343,6 +1378,7 @@ void Metainference::calculate()
     for(unsigned i=0;i<nrep_;++i) var_fact += (bias[i]/norm-ave_fact)*(bias[i]/norm-ave_fact);
   } else {
     // or arithmetic ones
+    for(unsigned i=0;i<nrep_;++i) bias[i] = 1.0;
     norm = dnrep; 
     fact = 1.0/norm; 
   }
@@ -1432,6 +1468,27 @@ void Metainference::calculate()
   /* fix sigma_mean_ for the effect of large forces */
   if(do_optsigmamean_==2) sigma_mean_modifier *= sm_mod_;
 
+  /* In case of sigma_mean update */
+  if(do_updatesigmamean_){
+     unsigned iselect = 0;
+     // if doing REM-like stuff, each quantity is stored and calculated separately
+     if(selector_.length()>0) iselect = static_cast<unsigned>(plumed.passMap[selector_]);
+     // update modifier when reaching the update stride or switching selector
+     if(sigma_mean_modifier_count_%update_stride_==0 || iselect!=iselect_old_){
+        // find maximum weight across replicas
+        double maxweight = (*(std::max_element(bias.begin(), bias.end())))/norm;
+        // update modifier
+        sigma_mean_modifier_[iselect] = sqrt(maxweight*dnrep);
+     }
+     // set value of modifier 
+     valueSMmod->set(sigma_mean_modifier_[iselect]);
+     sigma_mean_modifier = sigma_mean_modifier_[iselect];
+     // increment counter
+     sigma_mean_modifier_count_ += 1;
+     // store old value of iselect
+     iselect_old_ = iselect;
+  }
+  
   /* MONTE CARLO */
   const long int step = getStep();
   if(step%MCstride_==0&&!getExchangeStep()) doMonteCarlo(mean, sigma_mean_modifier);

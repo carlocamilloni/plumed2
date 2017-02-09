@@ -249,7 +249,7 @@ void SAXS::calculate(){
   }
 
   if(!serial) {
-    comm.Sum(&deriv[0][0], 3*deriv.size());
+    if(!deriv.empty()) comm.Sum(&deriv[0][0], 3*deriv.size());
     comm.Sum(&sum[0], numq);
   }
 

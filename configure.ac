@@ -255,7 +255,6 @@ if test $basic_warnings == true
 then
   PLUMED_CHECK_CXXFLAG([-Wall])
   PLUMED_CHECK_CXXFLAG([-pedantic])
-  PLUMED_CHECK_CXXFLAG([-std=c++11])
 fi
 
 if test $debug == true
@@ -284,6 +283,8 @@ then
   PLUMED_CHECK_CXXFLAG([-Wvariadic-macros])
   PLUMED_CHECK_CXXFLAG([-Wold-style-cast])
 fi
+
+PLUMED_CHECK_CXXFLAG([-std=c++11])
 
 AC_MSG_CHECKING([whether $CXX supports explicit])
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([ class A{explicit A(){}};])],

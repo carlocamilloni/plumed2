@@ -54,8 +54,6 @@ class HSAXS : public Colvar {
 private:
   bool                     pbc;
   bool                     serial;
-  bool                     verbose;
-  bool                     fixedq;
   unsigned                 numq;
   int      		   truncation;
   vector<double>           q_list;
@@ -94,9 +92,7 @@ public:
   long unsigned            parent_index(long unsigned index);
   long unsigned            parent_index(unsigned ownLevel, double x, double y, double z);
   Vector                   parent_centre(unsigned ownLevel, double x, double y, double z);
-  long int                 factorial(int n); 
   double                   factorial(double n, double m); 
-  int                      pmax(int level, double qval);
 };
 
 PLUMED_REGISTER_ACTION(HSAXS,"HSAXS")
@@ -106,8 +102,6 @@ void HSAXS::registerKeywords(Keywords& keys){
   componentsAreNotOptional(keys);
   useCustomisableComponents(keys);
   keys.addFlag("SERIAL",false,"Perform the calculation in serial - for debug purpose");
-  keys.addFlag("VERBOSE",false,"log truncation number for each q_value - for debug purpose");
-  keys.addFlag("FIXEDQ",false,"use same truncation for each q_value - for debug purpose");
   keys.addFlag("ATOMISTIC",false,"calculate SAXS for an atomistic model");
   keys.add("atoms","ATOMS","The atoms to be included in the calculation, e.g. the whole protein.");
   keys.add("compulsory","NUMQ","Number of used q values");
@@ -130,8 +124,6 @@ serial(false)
   const unsigned size = atoms.size();
 
   parseFlag("SERIAL",serial);
-  parseFlag("VERBOSE",verbose);
-  parseFlag("FIXEDQ",fixedq);
   //no pbcs used
   bool nopbc=!pbc;
   parseFlag("NOPBC",nopbc);
@@ -238,25 +230,22 @@ serial(false)
 void HSAXS::calculate(){
   if(pbc) makeWhole();
   //get parameters for mpi parallelization
-  unsigned stride                           = comm.Get_size();
-  unsigned rank                             = comm.Get_rank();
-  if(verbose) log<<"stride "<<stride<<" rank "<<rank<<" \n";
+  unsigned           stride                 = comm.Get_size();
+  unsigned           rank                   = comm.Get_rank();
   if(serial){
-    if(verbose) log<<"SERIAL stride "<<stride<<" rank "<<rank<<" \n";
     stride                                  = 1;
     rank                                    = 0;
   }
   //number of atoms
   const unsigned int size                   = getNumberOfAtoms();
   //scattering profile I
-  vector<double>                               I(numq,0);
-  //Jacobian
-//vector<Vector>                               deriv(numq*size);
+  vector<double>     I(numq,0);
   //calculate the distance of the centre of the box at lmax for each atom
-  vector<Vector>  centreDist(size);
-  vector<Vector>  unitCoords(size);
-  Vector min                                = getPosition(0);
-  Vector max                                = getPosition(0);
+  vector<Vector>     centreDist(size);
+  //coordinates in the unit box. Useful for calculating pertaining box, centre and parent. Compare Gumeroc, 2005, Chapter 5
+  vector<Vector>     unitCoords(size);
+  Vector             min                    = getPosition(0);
+  Vector             max                    = getPosition(0);
   for(unsigned i=rank;i<size;i+=stride) {
    centreDist[i]                            = getPosition(i);
    if(centreDist[i][0]<min[0]) min[0]       = centreDist[i][0];
@@ -288,17 +277,14 @@ void HSAXS::calculate(){
     polar[i][2]                             = atan2(centreDist[i][1],centreDist[i][0]);
 
   }
-
-  //creates a vector of atomic positions in polar coordinates
-
-
-  if(verbose) log<<"maxdist "<<maxdist<<"\n";
   truncation                                = int(maxdist*maxq);
   if(truncation<pow(2.,numl+3.)) truncation = pow(2.,numl+3.);
+  //number of terms in the basis set expansion
   p2                                        = truncation*truncation;
   log<<"truncation "<<truncation<<"\n";
+  //re-expansion coefficients for translating expansion coefficients by the RCR-formalism. eq. 41, Gumerov 2012
   cal_rotcoeff();
-  //as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
+  //as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber q, they can be precomputed here
   vector<Vector2d> qRnm(p2*size);
   for(unsigned int i=rank;i<size;i+=stride) {
     for(int n=0;n<truncation;n+=1) {
@@ -313,18 +299,11 @@ void HSAXS::calculate(){
         }
       }
     }
-
-//cal_transcoeff(1,0.1,4);
-
   //sum over qvalues
   for (int k=numq-1; k>=0; k--) {
-    log<<"starting calculations for qvalue "<<k<<"\n";
-    //dynamically set the truncation according to the scattering wavenumber.
-    int trunc                   = truncation/pow(2.,numl+0.);
-    //log<<"trunc "<<trunc<<"\n";
+    int    trunc                = truncation/pow(2.,numl+0.);
     double p22                  = trunc*trunc;
-    //log<<" original "<<truncation<<" "<<trunc<<"\n";
-    int num_boxes=pow(8.,numl+0.);
+    int    num_boxes            = pow(8.,numl+0.);
 
     //double sum over the p^2 expansion terms
     vector<Vector2d> Bnm(p22*num_boxes);
@@ -332,7 +311,6 @@ void HSAXS::calculate(){
     for(unsigned int i=rank;i<size;i+=stride) {
       double pq                 = polar[i][0]* q_list[k];
       int index=own_index(numl,unitCoords[i][0],unitCoords[i][1],unitCoords[i][2]);
-      //log<<"index "<<index<<"\n";
       for(int n=trunc-1;n>=0;n-=1) {
         //the spherical bessel functions do not depend on the order and are therefore precomputed here
         double bessel           = gsl_sf_bessel_jl(n,pq);
@@ -360,105 +338,88 @@ void HSAXS::calculate(){
     comm.Sum(&Bnm[0][0],2*p22*num_boxes);
   }
   //here the coefficients are caculated for the lowest level; therefore, the upward pass should follow now
-  vector<Vector2d> current                             = Bnm;
-  //log<<"\n";
-        //for(unsigned x=0;x<Bnm.size();x++) log<<Bnm[x]<<" | ";
-        //log<<"\n"<<Bnm.size()<<"\n";
+  vector<Vector2d>             current                    = Bnm;
   //loop over levels; omp?
     for(unsigned int l=numl;l>=1;l--) {
-      int old_num_boxes                                = num_boxes;
-      int old_trunc                                    = trunc;
-      int old_p22                                      = p22;
+      int                          old_num_boxes          = num_boxes;
+      int                          old_trunc              = trunc;
+      int                          old_p22                = p22;
       //becaude maxdist in parent is twice as high and trunc = q *maxdist (+ error_bound)
-      trunc                                            = old_trunc*2;
-      p22                                              = trunc*trunc;
-      num_boxes                                        = old_num_boxes/8;
+      trunc                                               = old_trunc*2;
+      p22                                                 = trunc*trunc;
+      num_boxes                                           = old_num_boxes/8;
       //coefficcients for the translation part of the rcr decomposition. Depend on q and t and therefore cannot be precomputed.
       cal_transcoeff(l,q_list[k],trunc+2);
-      vector<Vector2d> previous                        = current;
+      vector<Vector2d>             previous               = current;
       current.clear();
       current.resize(p22*num_boxes);
       //loop over boxes: should be mpi parallelized at some point
-
       for(int i=0;i<old_num_boxes;i++) {
-        vector<Vector2d> boxvector(old_p22);
-        for(int j=0;j<old_p22;j++) boxvector[j]        = previous[old_p22*i + j]; 
+        vector<Vector2d>           boxvector(old_p22);
+        for(int j=0;j<old_p22;j++) boxvector[j]           = previous[old_p22*i + j]; 
         //translation vector between the own box centre and the box centre of the parent box
-        Vector t                                       = cal_boxcentre(parent_index(i),l-1)-cal_boxcentre(i,l);
-        //normalized translation vector between te centres of the child and the parent boxes
-        Vector normal                                  = t/sqrt(t[0]*t[0]+t[1]*t[1]+t[2]*t[2]);
+        Vector                     t                      = cal_boxcentre(parent_index(i),l-1)-cal_boxcentre(i,l);
         //euler angles for the rotations in the rcr decomposition of the translation; note, that these are different than the ones mentioned in the appendix of Gumerov et al. Comp. Chem. (2012)
-        double alpha                                   = -atan2(normal[1],normal[0]);
-        //if(abs(alpha)>0.5) alpha -= M_PI;
-
-        double beta                                    = acos(normal[2]);
-        log<<i<<" "<<alpha/M_PI<<" "<<beta<<"\n";
-        vector<Vector2d> control(p22);
+        //especially note, that the sign of alpha is inverted to the one described in eq. A22, Gumerov 2012. No mathematical reason.Just makes the algorithm work for half-boxes.
+        //beta is considered indirectly later on
+        //gamma is arbitrary, therefore, set to 0 and therefore does not appear at all in this formulation
+        double                     alpha                  = -atan2(t[1],t[0]);
         for(int n=0;n<trunc;n++) {
-        //log<<" n "<<n<<"\n";
-          int n4                                       = (4*pow(n+0.,3.)-n)/3;
-          int n2                                       = 2*n+1;
+          int                      n4                     = (4*pow(n+0.,3.)-n)/3;
+          int                      n2                     = 2*n+1;
           for(int m=0;m<2*n+1;m++) {
-          //log<<"   m "<<m<<"\n";
-            int order                                  = m-n;
-            Vector2d Cmn;
+            int                    order                  = m-n;
+            double                 ap                     = -order*alpha;
+            Vector2d               backrot;
+            //backrotation. Compare eq. A22 in Gumerov 2012 with exchanged alpha and gamma
             for(int mp=0;mp<2*n+1;mp++) {
-            //log<<"     mp "<<mp<<"\n";
-              Vector2d trans;
-              int orderp                               = mp-n;
+              Vector2d             trans;
+              int                  orderp                 = mp-n;
+              //coaxial translation. Compare eq. A 15 in Gumerov 2012
               for(int np=abs(orderp);np<old_trunc;np++) {
-              //log<<"       np "<<np<<"\n";
-                int np4                                = (4*pow(np+0.,3.)-np)/3;
-                int np2                                = 2*np+1;
-                double Rmnnp                           = tcoeff[n*(n+1)*(n+2)/6 + abs(mp-n)*(n+1-0.5*(abs(mp-n)-1)) + np-abs(mp-n)];
-                if(np>n) Rmnnp                         = pow(-1.,n+np+0.) * tcoeff[np*(np+1)*(np+2)/6   +   abs(orderp)*(np+1-0.5*(abs(orderp)-1))   +   n-abs(orderp)]; 
-                //if(!(np>n))  log<<"index "<<n*(n+1)*(n+2)/6 + abs(mp-n)*(n+1-0.5*(abs(mp-n)-1)) + np-abs(mp-n)<<" Rmmnp "<<Rmnnp<<"\n";
-                //if(np>n) log<<"index "<<np*(np+1)*(np+2)/6   +   abs(orderp)*(np+1-0.5*(abs(orderp)-1))   +   n-abs(orderp)<<" Rmmnp "<<Rmnnp<<"\n";
-                //access index based on mp but for use as offset with np instead of n 
-                Vector2d rot;
+                int                np4                    = (4*pow(np+0.,3.)-np)/3;
+                int                np2                    = 2*np+1;
+                double             Rmnnp                  = tcoeff[n*(n+1)*(n+2)/6 + abs(mp-n)*(n+1-0.5*(abs(mp-n)-1)) + np-abs(mp-n)];
+                if(np>n)           Rmnnp                  = pow(-1.,n+np+0.) * tcoeff[np*(np+1)*(np+2)/6   +   abs(orderp)*(np+1-0.5*(abs(orderp)-1))   +   n-abs(orderp)]; 
+                Vector2d           rot;
+                //rotation. Compare eq. A22 in Gumerov, 2012
                 for(int mpp=0;mpp<2*np+1;mpp++) {
-                //log<<"         mpp "<<mpp<<"\n";
-                  double           Hmmn                = rcoeff[np4 + np2*(mp-n+np) + mpp];
-                  if(abs(beta)>1.) Hmmn                = rcoeff[np4 + np2*(mp-n+np) + mpp-2*(mpp-np)] * pow(-1.,np+orderp+mpp-np+0.);
-                  //if(abs(beta)< 1) log<<beta<<" np "<<np<<" mp "<<mp-n<<" mpp "<<mpp-np<<" index "<<np4 + np2*(mp-n+np) + mpp<<" Hmmn "<<Hmmn<<"\n";
-                  //if(abs(beta)> 1) log<<beta<<" np "<<np<<" mp "<<mp-n<<" mpp "<<-(mpp-np)<<" index "<<np4 + np2*(mp-n+np) + mpp-2*(mpp-np)<<" Hmmn "<<Hmmn<<"\n";
-                  rot[0]                              += (cos((mpp-np)*alpha) * boxvector[np*np + mpp][0] - sin((mpp-np)*alpha) * boxvector[np*np + mpp][1]) * Hmmn;
-                  rot[1]                              += (cos((mpp-np)*alpha) * boxvector[np*np + mpp][1] + sin((mpp-np)*alpha) * boxvector[np*np + mpp][0]) * Hmmn;
+                  double           app                    = (mpp-np)*alpha;
+                  //the if clause is in principal an indirect consideration of beta, which makes it unnecessary to calculate a normalization
+                  double           Hmmn                   = rcoeff[np4 + np2*(mp-n+np) + mpp];
+                  if(t[2]<0.)      Hmmn                   = rcoeff[np4 + np2*(mp-n+np) + mpp-2*(mpp-np)] * pow(-1.,np+orderp+mpp-np+0.);
+                  rot[0]                                 += (cos(app) * boxvector[np*np + mpp][0] - sin(app) * boxvector[np*np + mpp][1]) * Hmmn;
+                  rot[1]                                 += (cos(app) * boxvector[np*np + mpp][1] + sin(app) * boxvector[np*np + mpp][0]) * Hmmn;
                 }
-                trans                                 += Rmnnp * rot;
+                trans                                    += Rmnnp * rot;
               }
-              double           Hmmnb                   = rcoeff[n4 + n2*m + mp];
-              if(abs(beta)>1.) Hmmnb                   = rcoeff[n4 + n2*m + mp-2*orderp] * pow(-1.,n+order+orderp+0.);
-              //if(abs(beta)< 1) log<<" index "<<n4 + n2*m + mp<<" Hmmnb "<<Hmmnb<<"\n";
-              //if(abs(beta)> 1) log<<" index "<<n4 + n2*m + mp-2*orderp<<" Hmmnb "<<Hmmnb<<"\n";
-              Cmn[0]                                  += (cos(order*-alpha) * trans[0] - sin(order*-alpha) * trans[1]) * Hmmnb;
-              Cmn[1]                                  += (cos(order*-alpha) * trans[1] + sin(order*-alpha) * trans[0]) * Hmmnb;
+              //the if clause is in principal an indirect consideration of beta, which makes it unnecessary to calculate a normalization
+              double               Hmmnb                  = rcoeff[n4 + n2*m + mp];
+              if(t[2]<0.)          Hmmnb                  = rcoeff[n4 + n2*m + mp-2*orderp] * pow(-1.,n+order+orderp+0.);
+              backrot				         += trans*Hmmnb;
             }
-            current[p22*parent_index(i) + n  * n + m] += Cmn;
-            control[n*n + m] += Cmn;
+            //the sine and cosine terms come from the exponential term in front of the seum in eq. A22, Gumerov, 2012
+            current[p22*parent_index(i) + n  * n + m][0] += (cos(ap) * backrot[0] - sin(ap) * backrot[1]);
+            current[p22*parent_index(i) + n  * n + m][1] += (cos(ap) * backrot[1] + sin(ap) * backrot[0]);
           }
         }
-        //log<<i<<"\n";
-        //for(unsigned x=0;x<control.size();x++) log<<control[x]<<" | ";
-        //log<<"\n"<<current.size()<<"\n";
       } 
     }
-    Bnm=current;
     for(int t=0;t<num_boxes;t++) {
-      log<<"box "<<t<<"\n";
       for(int n=rank;n<trunc;n+=stride) {
         for(int m=0;m<(2*n)+1;m++) {
           int s          = n * n + m+p22*t;
-          I[k]          += Bnm[s][0] * Bnm[s][0] + Bnm[s][1] * Bnm[s][1];
+          I[k]          += current[s][0] * current[s][0] + current[s][1] * current[s][1];
         }
       }
     }
+    //reset the spherical harmonics to the precalculated legendre part
     qRnm=bu;
   } //end of the k loop
   if(!serial) {
     comm.Sum(&I[0],numq);
   }
-  //output (box)derivatives and scattering profile
+  //output scattering profile
   for(unsigned k=0; k<numq; k++) {
     Value* val            = getPntrToComponent(k);
     I[k]                  = 4 * M_PI*I[k];
@@ -469,49 +430,29 @@ void HSAXS::calculate(){
 
 
 
-
-
-
-
-
-
-
-//factorial of an integer
-long int HSAXS::factorial(int n) {
-  return (n == 1 || n == 0) ? 1 : factorial(n - 1) * n;
-}
-
-
 //calculation of the factorial dependent normalization factor using gamma functions to avoid overflow for large n.
+//needed for the calculations of rotational expansion coefficients according to eq. A25 in Gumerov, 2012
 double HSAXS::factorial(double n, double m) {
   return tgamma(2.*n+1.)/(tgamma(-m+n+1.)*tgamma(m+n+1.));
 }
 
-
-int HSAXS::pmax(int level, double qval) {
-return int(maxdist*qval*pow(2.,-level+0.));
-}
-
-
 //coefficients for partial derivatives of the spherical basis functions
 void HSAXS::cal_coeff() {
-  int td                                       = 1000;
-  int p2d                                      = td * td;
+  //adjust the maximum truncation for supplemental coefficients if necessary. However, if you ever need a higher value than 1000, you're probably doing something unsound
+  int                               td         = 1000;
+  int                               p2d        = td * td;
   av.resize(p2d);
   bv.resize(p2d);
   dv.resize(p2d);
   for( int n=0;n<td;n++) {
     for( int m=0;m<(2*n)+1;m++) {
-      double mval                              = m - n;
-      double nval                              = n;
+      double                        mval       = m - n;
+      double                        nval       = n;
       av[n*n+m]                                = sqrt(((nval+mval+1)*(nval+1-mval))/(((2*nval)+1)*((2*nval)+3)));
       bv[n*n+m]                                = sqrt(((nval-mval-1)*(nval-mval))/(((2*nval)-1)*((2*nval)+1)));
       if((-n<=(m-n)) && ((m-n)<0))  bv[n*n+m] *= -1;
-      //log<<"n "<<nval<<" m "<<mval<<" index "<<n*n+m<<" bval "<<bv[n*n+m]<<"\n";
-
       dv[n*n+m]                                = 0.5 * sqrt((nval-mval)*(nval+mval+1));
-      if(m-n<0) dv[n*n+m]                     *= -1;
-      //log<<"n "<<nval<<" m "<<mval<<" index "<<n*n+m<<" aval "<<dv[n*n+m]<<"\n";
+      if(m-n<0)                     dv[n*n+m] *= -1;
     }
   }
 }
@@ -520,11 +461,10 @@ void HSAXS::cal_coeff() {
 void HSAXS::cal_rotcoeff() {
   //number of rotational reexpansion coefficients. Evaluate the sum from n=0 to p over (2n+1)^2
   double numrc=(truncation+0.)/3*(4*pow((truncation+0.),2.)-1);
-  if(verbose) log<<numrc<<"\n";
   vector<double> rv;
   //vector of coefficients for beta=pi/2 --> are used to construct the coefficients for arbitrary angles
   rv.resize(numrc);
-  //vector of coefficients for beta=pi/4 --> pi/4 and 3*pi/4 are the only angles really occuring. Note the symmetry relation between the two.
+  //vector of coefficients for arbitrary angles, i.e. beta=acos(1/sqrt(3))
   rcoeff.resize(numrc);
   for(int n=0;n<truncation;n++) {
     //m is used as m'+n or m+n as necessary
@@ -535,58 +475,36 @@ void HSAXS::cal_rotcoeff() {
       int n4    = (4*pow(n+0.,3.)-n)/3;
       //offset for m. Corresponds to the number of m' per m
       int n2    = 2*n+1;
-      //coefficients for m'=0 and m=0,... + symmetries (mm'=m'm=-m-m'=-m'-m)
+      //coefficients for m'=0 and m=0,... + symmetries (mm'=m'm=-m-m'=-m'-m). See eq. A25 for analytical formula and A27 for symmetries, Gumerov 2012
       //n 0 mp
-      rv[n4+n2*n+m]                             = pow(-1.,m-n+0.) * gsl_sf_legendre_sphPlm(n,abs(order),0)/sqrt((2*n+1)/(4*M_PI));
-      if(verbose) log<<n4+n2*n+m<<" n "<<n<<" m "<<0<<" m' "<<m-n<<" "<<rv[n4+n2*n+m]<<"\n";
-      if(!(m-n==0)) {
-        //n mp 0
-        rv[n4+n2*m+n]                           = rv[n4+n2*n+m];
-        //n -mp 0
-        rv[n4+n2*(m-2*(m-n))+n]                 = rv[n4+n2*n+m];
-        //n 0 -mp
-        rv[n4+n2*n+m-2*(m-n)]                   = rv[n4+n2*n+m];
-
-        if(verbose) {
-          log<<n4+n2*m+n<<" n "<<n<<" m "<<m-n<<" m' "<<0<<" "<<rv[n4+n2*m+n]<<"\n";
-          log<<n4+n2*(m-2*(m-n))+n<<" n "<<n<<" m "<<-(m-n)<<" m' "<<0<<" "<<rv[n4+n2*(m-2*(m-n))+n-2*(n-n)]<<"\n";
-          log<<n4+n2*n+m-2*(m-n)<<" n "<<n<<" m "<<0<<" m' "<<-(m-n)<<" "<<rv[n4+n2*n-2*(n-n)+m-2*(m-n)]<<"\n";
-        }
-      }
-      //coefficients for m=n and m'=0,... + symmetries
-      if(abs(rv[n4+n2*2*n+m])<0.00000001) {
-        //n n mp
-        rv[n4+n2*2*n+m]                         = sqrt(factorial(n,order)) * pow(cos(M_PI/4),n+order+0.) * pow(sin(M_PI/4),n-order-0.);
-        if(-(m-n)<0)rv[n4+n2*2*n+m]            *= pow(-1.,m-n+0.);
-        //n mp n
-        rv[n4+n2*m+2*n]                         = rv[n4+n2*2*n+m];
-        //n -n -mp
-        rv[n4+m-2*(m-n)]                        = rv[n4+n2*2*n+m];
-        //n -mp -n
-        rv[n4+n2*(m-2*(m-n))]                   = rv[n4+n2*2*n+m];
-        //n n -mp
-        rv[n4+n2*2*n+m-2*(m-n)]                 = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
-        //n -mp n
-        rv[n4+n2*(m-2*(m-n))+2*n]               = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
-        //n -n mp
-        rv[n4+m]                                = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
-        //n mp -n
-        rv[n4+n2*m]                             = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
-
-        if(verbose) {
-          log<<n4+n2*2*n+m<<" n "<<n<<" m "<<n<<" m' "<<m-n<<" "<<rv[n4+n2*2*n+m]<<"\n";
-          log<<n4+n2*m+2*n<<" n "<<n<<" m "<<m-n<<" m' "<<n<<" "<<rv[n4+n2*m+2*n]<<"\n";
-          log<<n4+m-2*(m-n)<<" n "<<n<<" m "<<-n<<" m' "<<-(m-n)<<" "<<rv[n4+m-2*(m-n)]<<"\n";
-          log<<n4+n2*(m-2*(m-n))<<" n "<<n<<" m "<<-(m-n)<<" m' "<<-n<<" "<<rv[n4+n2*(m-2*(m-n))]<<"\n";
-          log<<n4+n2*2*n+m-2*(m-n)<<" n "<<n<<" m "<<n<<" m' "<<-(m-n)<<" "<<rv[n4+n2*2*n+m-2*(m-n)]<<"\n";
-          log<<n4+n2*(m-2*(m-n))+2*n<<" n "<<n<<" m "<<-(m-n)<<" m' "<<n<<" "<<rv[n4+n2*(m-2*(m-n))+2*n]<<"\n";
-          log<<n4+m<<" n "<<n<<" m "<<-n<<" m' "<<m-n<<" "<<rv[n4+m]<<"\n";
-          log<<n4+n2*m<<" n "<<n<<" m "<<m-n<<" m' "<<-n<<" "<<rv[n4+n2*m]<<"\n";
-        }
-      }
+      rv[n4+n2*n+m]                           = pow(-1.,m-n+0.) * gsl_sf_legendre_sphPlm(n,abs(order),0)/sqrt((2*n+1)/(4*M_PI));
+      //n mp 0
+      rv[n4+n2*m+n]                           = rv[n4+n2*n+m];
+      //n -mp 0
+      rv[n4+n2*(m-2*(m-n))+n]                 = rv[n4+n2*n+m];
+      //n 0 -mp
+      rv[n4+n2*n+m-2*(m-n)]                   = rv[n4+n2*n+m];
+      //coefficients for m=n and m'=0,... + symmetries. Analytical formula as given in eq. A25, Gumerov 2012
+      //n n mp
+      rv[n4+n2*2*n+m]                         = sqrt(factorial(n,order)) * pow(cos(M_PI/4),n+order+0.) * pow(sin(M_PI/4),n-order-0.);
+      if(-(m-n)<0) rv[n4+n2*2*n+m]           *= pow(-1.,m-n+0.);
+      //n mp n
+      rv[n4+n2*m+2*n]                         = rv[n4+n2*2*n+m];
+      //n -n -mp
+      rv[n4+m-2*(m-n)]                        = rv[n4+n2*2*n+m];
+      //n -mp -n
+      rv[n4+n2*(m-2*(m-n))]                   = rv[n4+n2*2*n+m];
+      //n n -mp
+      rv[n4+n2*2*n+m-2*(m-n)]                 = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
+      //n -mp n
+      rv[n4+n2*(m-2*(m-n))+2*n]               = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
+      //n -n mp
+      rv[n4+m]                                = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
+      //n mp -n
+      rv[n4+n2*m]                             = pow(-1.,2.0*n+order) * rv[n4+n2*2*n+m];
     }
   }
-  if(verbose) log<<"recursive calculation of  mp=1 from mp=0\n";
+  //recursive calculation of  mp=1 from mp=0. eq. A26 with m=0 and beta=pi/2 in Gumerov 2012
   for(int n=2;n<truncation;n++) {
     for( int m=n;m<(2*n);m++) {
       int order = m-n;
@@ -595,40 +513,29 @@ void HSAXS::cal_rotcoeff() {
       int n4p   = (4*pow(n-1.,3.)-(n-1))/3;
       int n2p   = (2*(n-1)+1);
       //recursive calculation of the coefficients for m'=1 and m=0,... from the coefficients of m'=0 and m=0,...
-      if(abs(rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*n+m-1])<0.00000001) {
-        //n 1 mp
-        rv[n4p+n2p*n+m-1]                       = 1/bv[n*n+n] * 0.5 * (bv[n*n+m-1-2*order] * rv[n4+n2*n+m+1] - bv[n*n+m-1] * rv[n4+n2*n+m-1])- 1/bv[n*n+n] * av[(n-1)*(n-1)+m-1] * rv[n4+n2*n+m];
-        //n mp 1
-        rv[n4p+n2p*(m-1)+n]                     = rv[n4p+n2p*n+m-1];
-        //n -1 -mp
-        rv[n4p+n2p*(n-2)+m-1-2*(m-n)]           = rv[n4p+n2p*n+m-1];
-        //n -mp -1
-        rv[n4p+n2p*(m-1-2*(m-n))+n-2]           = rv[n4p+n2p*n+m-1];
-        //n -1 mp
-        rv[n4p+n2p*(n-2)+m-1]                   = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
-        //n 1 -mp
-        rv[n4p+n2p*n+m-1-2*(m-n)]               = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1]; 
-        //n mp -1
-        rv[n4p+n2p*(m-1)+n-2]                   = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
-        //n -mp 1
-        rv[n4p+n2p*(m-1-2*(m-n))+n]             = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
-        if(verbose) {
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*n+m-1<<" n "<<n-1<<" m "<<1<<" m' "<<order<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(n-1+1)+m-1]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1)+n<<" n "<<n-1<<" m "<<m-n<<" m' "<<1<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1)+n]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(n-2)+m-1-2*(m-n)<<" n "<<n-1<<" m "<<-1<<" m' "<<-(m-n)<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(n-2)+m-1-2*(m-n)]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1-2*(m-n))+n-2<<" n "<<n-1<<" m "<<-(m-n)<<" m' "<<-1<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1-2*(m-n))+n-2]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(n-2)+m-1<<" n "<<n-1<<" m "<<-1<<" m' "<<(m-n)<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(n-2)+m-1]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*n+m-1-2*(m-n)<<" n "<<n-1<<" m "<<1<<" m' "<<-(m-n)<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*n+m-1-2*(m-n)]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1)+n-2<<" n "<<n-1<<" m "<<(m-n)<<" m' "<<-1<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1)+n-2]<<"\n";
-          log<<(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1-2*(m-n))+n<<" n "<<n-1<<" m "<<-(m-n)<<" m' "<<1<<" "<<rv[(4*pow(n-1.,3.)-(n-1))/3+(2*(n-1)+1)*(m-1-2*(m-n))+n]<<"\n";
-        }
-      }
+      //n 1 mp
+      rv[n4p+n2p*n+m-1]                       = 1/bv[n*n+n] * 0.5 * (bv[n*n+m-1-2*order] * rv[n4+n2*n+m+1] - bv[n*n+m-1] * rv[n4+n2*n+m-1])- 1/bv[n*n+n] * av[(n-1)*(n-1)+m-1] * rv[n4+n2*n+m];
+      //n mp 1
+      rv[n4p+n2p*(m-1)+n]                     = rv[n4p+n2p*n+m-1];
+      //n -1 -mp
+      rv[n4p+n2p*(n-2)+m-1-2*(m-n)]           = rv[n4p+n2p*n+m-1];
+      //n -mp -1
+      rv[n4p+n2p*(m-1-2*(m-n))+n-2]           = rv[n4p+n2p*n+m-1];
+      //n -1 mp
+      rv[n4p+n2p*(n-2)+m-1]                   = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
+      //n 1 -mp
+      rv[n4p+n2p*n+m-1-2*(m-n)]               = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1]; 
+      //n mp -1
+      rv[n4p+n2p*(m-1)+n-2]                   = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
+      //n -mp 1
+      rv[n4p+n2p*(m-1-2*(m-n))+n]             = pow(-1.,n-1+m-n+1.) * rv[n4p+n2p*n+m-1];
     }
   }
-  if(verbose) log<<"second recursion to fill the matrix:\n";
+  //second recursion to fill the matrix. eq. A23 in Gumerov 2012
   for(int n=2;n<truncation;n++) {
     for(int mp=n+1;mp<2*n-1;mp++) {
       for( int m=n+2;m<2*n;m++) {
+        //necessary if clause because of compulsory order of for loops
         if(mp<m) {
           int n4 = (4*pow(n+0.,3.)-n)/3;
           int n2 = 2*n+1;
@@ -648,23 +555,11 @@ void HSAXS::cal_rotcoeff() {
           rv[n4+n2*(mp+1)+m-2*(m-n)]            = rv[n4+n2*m+mp+1] *  pow(-1.,n+m-n+mp-n+1.);
           //n -(mp+1) m
           rv[n4+n2*(mp+1-2*(mp+1-n))+m]         = rv[n4+n2*m+mp+1] *  pow(-1.,n+m-n+mp-n+1.);
-          if(verbose) {
-            log<<"rv[n4+n2*(m-1)+mp-1] "<<n4+n2*(m-1)+mp<<" rv[n4+n2*(m+1)+mp+1] "<<n4+n2*(m+1)+mp<<" rv[n4+n2*m+mp-1] "<<n4+n2*m+mp-1<<"\n";
-            log<<n4+n2*m+mp+1<<" n "<<n<<" m "<<(m-n)<<" m' "<<mp-n+1<<" "<<rv[n4+n2*m+mp+1]<<"\n"; 
-            log<<n4+n2*(mp+1)+m<<" n "<<n<<" m "<<mp-n+1<<" m' "<<m-n<<" "<<rv[n4+n2*(mp+1)+m]<<"\n"; 
-            log<<n4+n2*(mp+1-2*(mp+1-n))+m-2*(m-n)<<" n "<<n<<" m "<<-(mp-n+1)<<" m' "<<-(m-n)<<" "<<rv[n4+n2*(mp+1-2*(mp+1-n))+m-2*(m-n)]<<"\n"; 
-            log<<n4+n2*(m-2*(m-n))+mp+1-2*(mp+1-n)<<" n "<<n<<" m "<<-(m-n)<<" m' "<<-(mp-n+1)<<" "<<rv[n4+n2*(m-2*(m-n))+mp+1-2*(mp+1-n)]<<"\n"; 
-            log<<n4+n2*(m-2*(m-n))+mp+1<<" n "<<n<<" m "<<-(m-n)<<" m' "<<mp-n+1<<" "<<rv[n4+n2*(m-2*(m-n))+mp+1]<<"\n"; 
-            log<<n4+n2*(m)+mp+1-2*(mp+1-n)<<" n "<<n<<" m "<<(m-n)<<" m' "<<-(mp-n+1)<<" "<<rv[n4+n2*(m)+mp+1-2*(mp+1-n)]<<"\n"; 
-            log<<n4+n2*(mp+1)+m-2*(m-n)<<" n "<<n<<" m "<<(mp+1-n)<<" m' "<<-(m-n)<<" "<<rv[n4+n2*(mp+1)+m-2*(m-n)]<<"\n"; 
-            log<<n4+n2*(mp+1-2*(mp+1-n))+m<<" n "<<n<<" m "<<-(mp-n+1)<<" m' "<<m-n<<" "<<rv[n4+n2*(mp+1-2*(mp+1-n))+m]<<"\n"; 
-          }
         }
       }
     }
   }
-  if(verbose) log<<"flip transformation from pi/2 to acos(1/sqrt(3))\n";
-  //calculation of the coefficients for beta=acos(1/sqrt(3)) from the ones for beta=acos(1/sqrt(3)) via the flip transform
+  //calculation of the coefficients for beta=acos(1/sqrt(3)) from the ones for beta=pi/2 via the flip transform. eq. A 24 in Gumerov 2012. Note, that there, different values for beta are claimed
   for(int n=0;n<truncation;n++) {
     for( int m=0;m<2*n+1;m++) {
       for(int mp=0;mp<2*n+1;mp++) {
@@ -672,9 +567,8 @@ void HSAXS::cal_rotcoeff() {
         int n2 = 2*n+1;
         rcoeff[n4+n2*m+mp]                      = 0;
         for(int y=0;y<(2*n)+1;y++) {
-          rcoeff[n4+n2*m+mp]                   += rv[n4+n2*m+y]*rv[n4+n2*mp+y]*cos(acos(1/sqrt(3))*(y-n)+0.5*M_PI*(mp-n+m-n));
+          rcoeff[n4+n2*m+mp]                   += rv[n4+n2*m+y]*rv[n4+n2*mp+y]* cos(acos(1/sqrt(3))*(y-n)+0.5*M_PI*(mp-n+m-n));
         }
-        if(verbose) log<<n4+n2*m+mp<<" n "<<n<<" m "<<(m-n)<<" m' "<<mp-n<<" "<<rcoeff[n4+n2*m+mp]<<"\n";
       }
     }
   }
@@ -683,21 +577,16 @@ void HSAXS::cal_rotcoeff() {
 
 //calculates translation coefficients for a given level and q
 void HSAXS::cal_transcoeff(int level, double qval, int tr) {
+  //the structure of therecursion makes it necessary to calculate the translation coefficients to a higher truncation. See Gumerov, 2004, Chapters 3,7
   int p=2*tr-2;
-  if(verbose) log<<"tft "<<p<<"\n";
-//length of the translation vector for a given target level
+  //length of the translation vector for a given target level (i.e. coarser level in the case of the upward pass
   double t=sqrt(0.75*pow(2.,-2.*level))*maxdist;
-  if(verbose) log<<" t "<<t<<"\n";
   tcoeff.resize((p+1)*(p+2)*(p+3)/6);
-  if(verbose) log<<"size "<<tcoeff.size()<<"\n";
-  if(verbose) log<<"stuff for m/np =0\n";
+//analytical formula for m=n'=0. eq. A17 in Gumerov 2012
   for(int n=0;n<p+1;n++) {
-    int i=n*(n+1)*(n+2)/6;
-    tcoeff[i]=pow(-1.,n+0.)*sqrt(2*n+1.)*gsl_sf_bessel_jl(n,qval*t);
-    if(verbose)  log<<i<<" n "<<n<<" m "<<0<<" np "<<0<<" "<<tcoeff[i]<<"\n";
+    tcoeff[n*(n+1)*(n+2)/6]=pow(-1.,n+0.)*sqrt(2*n+1.)*gsl_sf_bessel_jl(n,qval*t);
   }
-  //there is no loop over np because np is utterly dependent on m (either outright m or m+1)
-  if(verbose) log<<"first recursion: advancement in m\n";
+  //first recursion: advancement in m. eq. A18 in Gumerov 2012
   for(int m=0;m<tr;m++) {
     for(int n=(m+1);n<p;n++) {
       //the next three lines define offsets for n
@@ -708,27 +597,12 @@ void HSAXS::cal_transcoeff(int level, double qval, int tr) {
       int j  = (m+1)*(n+1-0.5*m);
       int jp = m*(n-0.5*(m-1));
       int jn = m*(n+2-0.5*(m-1));
-      //mval is needed for the coefficients av and bv (probably)
-      int mval=m+n;
-      tcoeff[i+j]=0;
-      if(abs(bv[n*n+mval-2*m-1])>0.00000001) {
-        tcoeff[i+j] += 1/ bv[(m+1)*(m+1)] * bv[n*n+mval-2*m-1] * tcoeff[ip+jp];
-        if(verbose) {
-        log<<"  1A  coeff "<<ip+jp<<" n "<<n-1<<" m "<<m<<" np "<<m<<" "<<tcoeff[ip+jp]<<"\n";        
-        log<<"      bvals "<<n*n+mval-2*m-1<<" "<<bv[n*n+mval-2*m-1]<<"\n";
-        }
-      }
-      if(abs(bv[(n+1)*(n+1)+mval+1])>0.00000001) {
-        tcoeff[i+j] -= 1/bv[(m+1)*(m+1)] * bv[(n+1)*(n+1)+mval+1] * tcoeff[in+jn];
-        if(verbose) {
-        log<<"  1B  coeff "<<in+jn<<" n "<<n+1<<" m "<<m<<" np "<<m<<" "<<tcoeff[in+jn]<<"\n";
-        log<<"      bvals "<<(n+1)*(n+1)+mval+1<<" "<<bv[(n+1)*(n+1)+mval+1]<<"\n";
-        }
-      }
-     if(verbose) log<<i+j<<" n "<<n<<" m "<<m+1<<" np "<<m+1<<" "<<tcoeff[i+j]<<"\n";
+      tcoeff[i+j]  = 0;
+      tcoeff[i+j] += 1/bv[(m+1)*(m+1)] * bv[n*n+m+n-2*m-1]     * tcoeff[ip+jp];
+      tcoeff[i+j] -= 1/bv[(m+1)*(m+1)] * bv[(n+1)*(n+1)+m+n+1] * tcoeff[in+jn];
     }
   }
-  if(verbose) log<<"second recursion: advancement in np\n";
+  //second recursion: advancement in np. eq. A19 in Gumerov 2012
   for(int m=0;m<tr;m++) {
     for(int np=m;np<p-1;np++) {
       for(int n=1;n<p;n++) {
@@ -741,33 +615,14 @@ void HSAXS::cal_transcoeff(int level, double qval, int tr) {
           int j  = m*(n+1-0.5*(m-1));
           int jp = m*(n-0.5*(m-1));
           int jn = m*(n+2-0.5*(m-1));
-            tcoeff[i+j+np+1-m] = 0;
-            if(verbose) log<<"      avals "<<np*np+m+np<<" "<<av[np*np+m+np]<<"\n";
-            if(np>m) {
-              tcoeff[i+j+np+1-m]    += 1/av[np*np+m+np] * av[(np-1)*(np-1)+np+m-1] * tcoeff[i+j+np-1-m];
-              if(verbose) {
-                log<<"  2A  coeff "<<i+j+np-1-m<<" n "<<n<<" m "<<m<<" np "<<np-1<<" "<<tcoeff[i+j+np-1-m]<<"\n";
-                log<<"      avals "<<(np-1)*(np-1)+np+m-1<<" "<<av[(np-1)*(np-1)+np+m-1]<<"\n";
-              }
-            } 
-            tcoeff[i+j+np+1-m]    -= 1/av[np*np+m+np] * av[n*n+m+n] * tcoeff[in+jn+np-(m)];
-            if(verbose) {
-              log<<"  2B  coeff "<<in+jn+np-(m)<<" n "<<n+1<<" m "<<m<<" np "<<np<<" "<<tcoeff[in+jn+np-(m)]<<"\n";
-              log<<"      avals "<<n*n+m+n<<" "<<av[n*n+m+n]<<"\n";
-            }
-            if(n>m) {  
-              tcoeff[i+j+np+1-m]    += 1/av[np*np+m+np] * av[(n-1)*(n-1)+m+n-1] * tcoeff[ip+jp+np-(m)];
-              if(verbose) {
-                log<<"  2C  coeff "<<ip+jp+np-(m)<<" n "<<n-1<<" m "<<m<<" np "<<np<<" "<<tcoeff[ip+jp+np-(m)]<<"\n";
-                log<<"      avals "<<(n-1)*(n-1)+m+n-1<<" "<<av[(n-1)*(n-1)+m+n-1]<<"\n";
-              }
-            }
-          if(verbose) log<<i+j+np+1-m<<" n "<<n<<" m "<<m<<" np "<<np+1<<" "<<tcoeff[i+j+np+1-m]<<"\n";
+          tcoeff[i+j+np+1-m]              = 0;
+          if(np>m) tcoeff[i+j+np+1-m]    += 1/av[np*np+m+np] * av[(np-1)*(np-1)+np+m-1] * tcoeff[i+j+np-1-m]; 
+          tcoeff[i+j+np+1-m]             -= 1/av[np*np+m+np] * av[n*n+m+n]              * tcoeff[in+jn+np-(m)];
+          if(n>m)  tcoeff[i+j+np+1-m]    += 1/av[np*np+m+np] * av[(n-1)*(n-1)+m+n-1]    * tcoeff[ip+jp+np-(m)];
         }
       }
     }
   }
-  if(verbose) log<<"finished\n";
 }
 
 
@@ -794,6 +649,8 @@ Vector2d HSAXS::dZHarmonics(unsigned k, unsigned int i, int n, int m, vector<Vec
   return dRdc;
 }
 
+
+//below, a bunch a functions for finding the indices/centres of a box or parent box follow. Mostly based on bit(de)interleaving and bitshifts
 
 //calculates a binary representation for floating pont decimals of format 0.x. 
 std::bitset<24> HSAXS::cal_bin(double dec) {

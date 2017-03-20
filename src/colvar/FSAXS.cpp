@@ -56,7 +56,6 @@ private:
   bool                     serial;
   bool                     verbose;
   bool                     fixedq;
-  bool                     ocentered;
   unsigned                 numq;
   int      		   truncation;
   vector<double>           q_list;
@@ -90,7 +89,6 @@ void FSAXS::registerKeywords(Keywords& keys){
   keys.addFlag("SERIAL",false,"Perform the calculation in serial - for debug purpose");
   keys.addFlag("VERBOSE",false,"log truncation number for each q_value - for debug purpose");
   keys.addFlag("FIXEDQ",false,"use same truncation for each q_value - for debug purpose");
-  keys.addFlag("OCENTERED",false,"readjust the maximum distance in the system to encompass negative coordinates");
   keys.addFlag("ATOMISTIC",false,"calculate SAXS for an atomistic model");
   keys.add("atoms","ATOMS","The atoms to be included in the calculation, e.g. the whole protein.");
   keys.add("compulsory","NUMQ","Number of used q values");
@@ -99,7 +97,6 @@ void FSAXS::registerKeywords(Keywords& keys){
   keys.addFlag("ADDEXPVALUES",false,"Set to TRUE if you want to have fixed components with the experimental values.");
   keys.add("numbered","EXPINT","Add an experimental value for each q value.");
   keys.add("compulsory","SCEXP","1.0","SCALING value of the experimental data. Usefull to simplify the comparison.");
-  keys.add("compulsory","TRUNCATION","50","Truncation number p for the expansion in spherical hamonics.");
 }
 //constructor
 FSAXS::FSAXS(const ActionOptions&ao):
@@ -115,7 +112,6 @@ serial(false)
   parseFlag("SERIAL",serial);
   parseFlag("VERBOSE",verbose);
   parseFlag("FIXEDQ",fixedq);
-  parseFlag("OCENTERED",ocentered);
 //no pbcs used
   bool nopbc=!pbc;
   parseFlag("NOPBC",nopbc);
@@ -124,12 +120,6 @@ serial(false)
   numq = 0;
   parse("NUMQ",numq);
   if(numq==0) error("NUMQ must be set");  
-//read in a truncation value
-  truncation= 0;
-  parse("TRUNCATION",truncation);
-  truncation+=2;
-  if(truncation==0) truncation=50;
-  p2   = truncation*truncation;
 //read experimental scaling factor
   double scexp = 0;
   parse("SCEXP",scexp);
@@ -227,11 +217,7 @@ serial(false)
 //approximation of the Debye function for SAXS profiling by a truncated harmonic expansion (see Gumerov et al. 2012 and Berlin et al. 2014)
 void FSAXS::calculate(){
   if(pbc) makeWhole();
-
-//parameter for dynamic truncation. Assumes that the user chose the truncation according to formula (24) in Gumerov et al. 2012
-
-
-//get parameters for mpi parallelization
+  //get parameters for mpi parallelization
   unsigned stride=comm.Get_size();
   unsigned rank=comm.Get_rank();
   log<<"stride "<<stride<<" rank "<<rank<<" \n";
@@ -241,67 +227,70 @@ void FSAXS::calculate(){
     rank=0;
   }
 
-//number of atoms
+  //number of atoms
   const unsigned int                           size = getNumberOfAtoms();
-//scattering profile I
+  //scattering profile I
   vector<double>                               I(numq);
-//Jacobian
+  //Jacobian
   vector<Vector>                               deriv(numq*size);
-
-//creates a vector of atomic positions in polar coordinates
+  //creates a vector of atomic positions in polar coordinates
   vector<Vector> polar(size);
-  double max=0;
-  double min=100000;
+  Vector max=getPosition(0);
+  Vector min=getPosition(0);
 #pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for(unsigned i=0;i<size;i++) {
-//r
-    polar[i][0]=sqrt(getPosition(i)[0]*getPosition(i)[0]+getPosition(i)[1]*getPosition(i)[1]+getPosition(i)[2]*getPosition(i)[2]);
-    if(polar[i][0] > max) max = polar[i][0];
-    if(polar[i][0] < min) min = polar[i][0];
-//cos(theta)
-    polar[i][1]=getPosition(i)[2]/polar[i][0];
-//phi
-    polar[i][2]=atan2(getPosition(i)[1],getPosition(i)[0]);
+    Vector coord=getPosition(i);
+    //r
+    polar[i][0]=sqrt(coord[0]*coord[0]+coord[1]*coord[1]+coord[2]*coord[2]);
+    if(coord[0]<min[0]) min[0]       = coord[0];
+    if(coord[1]<min[1]) min[1]       = coord[1];
+    if(coord[2]<min[2]) min[2]       = coord[2];
+    if(coord[0]>max[0]) max[0]       = coord[0];
+    if(coord[1]>max[1]) max[1]       = coord[1];
+    if(coord[2]>max[2]) max[2]       = coord[2];
+    //cos(theta)
+    polar[i][1]=coord[2]/polar[i][0];
+    //phi
+    polar[i][2]=atan2(coord[1],coord[0]);
   }
-  maxdist=max-min;
-  if(ocentered) maxdist *= 2;
-  log<<"maxq "<<q_list[numq-1]<<"1/nm\n";
-  log<<"maxdist "<<maxdist<<" nm\n";
+  max                                      -= min;
+  maxdist                                   = max[0];
+  if(maxdist<max[1]) maxdist                = max[1];
+  if(maxdist<max[2]) maxdist                = max[2];
+  truncation=5+int(maxdist*q_list[numq-1]+0.5*pow((12-log10(maxdist*q_list[numq-1])),2/3)*pow(maxdist*q_list[numq-1],1/3));
+  p2=truncation*truncation;
   int algorithm=0; 
   vector<int> trunc(numq);
-//sum over qvalues
+  //dynamically set the truncation according to the scattering wavenumber.
   for (int k=numq-1; k>=0; k--) {
-//dynamically set the truncation according to the scattering wavenumber.
     trunc[k]=truncation;
     if(!fixedq)  {
-      double qa = maxdist*q_list[k];
-      trunc[k]=(int)qa;
+      trunc[k]=5+int(1.2*maxdist*q_list[k]+0.5*pow((12-log10(maxdist*q_list[k])),2/3)*pow(maxdist*q_list[k],1/3));
       if(truncation<trunc[k]) trunc[k] = truncation;
-      if(trunc[k]<15)         trunc[k] = 15;
+      if(trunc[k]<10)          trunc[k] = 10;
     }
-    if(verbose) log<<trunc[k]<<"\n";
-    if(trunc[k]<truncation/2 && algorithm==0) algorithm=k;
+    if(2*trunc[k]<0.5*sqrt(2*size) && algorithm==0) algorithm=k;
   }
-
   vector<Vector2d>                             qRnm(p2*size);
-//as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
-    for(unsigned int i=rank;i<size;i+=stride) {
-      for(int n=0;n<truncation;n+=1) {
-        for(int m=0;m<(n+1);m++) {
-          int order             = m  - n;
-          int x                 = p2 * i + n  * n + m;
-          double gsl            =      gsl_sf_legendre_sphPlm(n,abs(order),polar[i][1]);
-//real part of the spherical basis function of order m, degree n of atom i
-          qRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
-//imaginary part of the spherical basis function of order m, degree n of atom i
-          qRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
-          }
-        }
+  //as the legndre polynomials and the exponential term in the basis set expansion are not function of the scattering wavenumber, they can be precomputed
+  for(unsigned int i=rank;i<size;i+=stride) {
+    for(int n=0;n<truncation;n+=1) {
+      for(int m=0;m<(n+1);m++) {
+        int order             = m  - n;
+        int x                 = p2 * i + n  * n + m;
+        double gsl            =      gsl_sf_legendre_sphPlm(n,abs(order),polar[i][1]);
+        //real part of the spherical basis function of order m, degree n of atom i
+        qRnm[x][0]          =      gsl           * cos(order*polar[i][2]);
+        //imaginary part of the spherical basis function of order m, degree n of atom i
+        qRnm[x][1]          =      gsl           * sin(order*polar[i][2]);
       }
+    }
+  }
+      
 #pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for (int k=numq-1; k>=algorithm; k--) {
     const unsigned kN  = k * size;
-//calculation via direct Debye summation
+    //calculation via direct Debye summation
     for (unsigned i=rank; i<size-1; i+=stride) {
       const double FF=2.*FF_value[k][i];
       const Vector posi=getPosition(i);
@@ -322,39 +311,39 @@ void FSAXS::calculate(){
       deriv[kN+i] -= dsum;
     }
   }
-
+  //calculation via Middleman method
   for (int k=algorithm-1; k>=0; k--) {
     const unsigned kN  = k * size;
     double p22=trunc[k]*trunc[k];
-//double sum over the p^2 expansion terms
+    //double sum over the p^2 expansion terms
     vector<Vector2d>                             Bnm(p22);
     for(unsigned int i=rank;i<size;i+=stride) {
       double pq =polar[i][0]* q_list[k];
       for(int n=trunc[k]-1;n>=0;n-=1) {
-//the spherical bessel functions do not depend on the order and are therefore precomputed here
+        //the spherical bessel functions do not depend on the order and are therefore precomputed here
         double bessel           = gsl_sf_bessel_jl(n,pq);
-//here conj(R(m,n))=R(-m,n) is used to decrease the terms in the sum over m by a factor of two
+        //here conj(R(m,n))=R(-m,n) is used to decrease the terms in the sum over m by a factor of two
         for(int m=0;m<(n+1);m++) {
           int order             = m-n;
           int s                 = n  * n + m;
           int t                 = s  - 2 * order;
           int x                 = p2 * i + s;
           int y                 = p2 * i + t;
-//real part of the spherical basis function of order m, degree n of atom i
+          //real part of the spherical basis function of order m, degree n of atom i
           qRnm[x]              *= bessel;
-//real part of the spherical basis function of order -m, degree n of atom i
+          //real part of the spherical basis function of order -m, degree n of atom i
           qRnm[y][0]            = qRnm[x][0];
-//imaginary part of the spherical basis function of order -m, degree n of atom i
+          //imaginary part of the spherical basis function of order -m, degree n of atom i
           qRnm[y][1]            =-qRnm[x][1];
-//expansion coefficient of order m and degree n
+          //expansion coefficient of order m and degree n
           Bnm[s]               += FF_value[k][i] * qRnm[y];
-//correction for expansion coefficient of order -m and degree n
+          //correction for expansion coefficient of order -m and degree n
           if(order!=0) Bnm[t]  += FF_value[k][i] * qRnm[x];
         }   
       }
     }
 
-//calculate expansion coefficients for the derivatives
+  //calculate expansion coefficients for the derivatives
   vector<Vector2d>	                         a(3*p22);
   for(unsigned int i=rank;i<size;i+=stride) {
     for(int n=0;n<trunc[k]-1;n++) {
@@ -371,7 +360,7 @@ void FSAXS::calculate(){
     comm.Sum(&a[0][0],  6*p22);
   }
 
-//calculation of the scattering profile I of the kth scattering wavenumber q
+  //calculation of the scattering profile I of the kth scattering wavenumber q
   for(int n=rank;n<trunc[k];n+=stride) {
     for(int m=0;m<(2*n)+1;m++) {
       int s          = n * n + m;
@@ -379,9 +368,9 @@ void FSAXS::calculate(){
     }
   }
   
-//calculation of (box)derivatives
+    //calculation of (box)derivatives
     for(unsigned int i=rank;i<size;i+=stride) {
-//vector of the derivatives of the expanded functions psi
+      //vector of the derivatives of the expanded functions psi
       Vector             dPsi;
       int s               = p2 * i;
       double pq           = polar[i][0]* q_list[k];
@@ -393,30 +382,29 @@ void FSAXS::calculate(){
           dPsi[0]        += 0.5*(qRnm[y][0] * a[z][0]   + qRnm[y][1] * a[z][1]);
           dPsi[1]        += 0.5*(qRnm[y][0] * a[z+1][1] - qRnm[y][1] * a[z+1][0]);
           dPsi[2]        +=      qRnm[y][0] * a[z+2][0] + qRnm[y][1] * a[z+2][1];
-          qRnm[y]        /= bessel; 
+          qRnm[y]        /= bessel;
         } 
       }
       deriv[kN+i]        += FF_value[k][i] * dPsi;
     }
   }
-//end of the k loop
-  //}
+  //end of the k loop
 
   if(!serial) {
     comm.Sum(&I[0],               numq);
     comm.Sum(&deriv[0][0],        3*deriv.size());
   }
 
-//output (box)derivatives and scattering profile
-log<<"turning point "<<algorithm<<"\n";
+  //output (box)derivatives and scattering profile
+  log<<algorithm<<"\n";
 #pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for(int k=0; k<algorithm; k++) {
-    Tensor                               deriv_box;
+    Tensor         deriv_box;
     const unsigned kN     = k * size;
-    Value* val            = getPntrToComponent(k);
+    Value*         val    = getPntrToComponent(k);
     for(unsigned i=0; i<size; i++) {
       setAtomsDerivatives(val, i, 8 * M_PI * q_list[k] * deriv[kN+i]);
-      deriv_box += Tensor(getPosition(i),deriv[kN+i]);
+      deriv_box          += Tensor(getPosition(i),deriv[kN+i]);
     }
     I[k]                  = 4 * M_PI*I[k];
     setBoxDerivatives(val, -8 * M_PI* q_list[k]*deriv_box);
@@ -425,9 +413,9 @@ log<<"turning point "<<algorithm<<"\n";
 
 #pragma omp parallel for num_threads(OpenMP::getNumThreads())
   for(unsigned k=algorithm; k<numq; k++) {
-    Tensor                  deriv_box;
+    Tensor         deriv_box;
     const unsigned kN     = k * size;
-    Value* val            = getPntrToComponent(k);
+    Value*         val    = getPntrToComponent(k);
     for(unsigned i=0; i<size; i++) { 
       setAtomsDerivatives(val, i, deriv[kN+i]);
       deriv_box += Tensor(getPosition(i),deriv[kN+i]);
@@ -441,9 +429,9 @@ log<<"turning point "<<algorithm<<"\n";
 
 //coefficients for partial derivatives of the spherical basis functions
 void FSAXS::cal_coeff() {
-  avals.resize(p2);
-  bvals.resize(p2);
-  for( int n=0;n<truncation;n++) {
+  avals.resize(100*100);
+  bvals.resize(100*100);
+  for( int n=0;n<100;n++) {
     for( int m=0;m<(2*n)+1;m++) {
       double mval                         = m-n;
       double nval                         = n;
@@ -1005,7 +993,7 @@ void FSAXS::calculateASF(const vector<AtomNumber> &atoms, vector<vector<long dou
        if(AA_map.find(type_s) != AA_map.end()){
          const unsigned index=AA_map[type_s];
          const double rho = 0.334;
-         const double volr = pow(param_v[index], (2.0/3.0)) /(16. * M_PI);
+         const double volr = pow(param_v[index], (2.0/3.0)) /(4. * M_PI);
          for(unsigned k=0;k<numq;++k){
            const double q = q_list[k];
            const double s = q / (4. * M_PI);

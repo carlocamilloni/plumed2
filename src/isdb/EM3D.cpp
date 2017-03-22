@@ -102,6 +102,8 @@ private:
  OFile Devfile_;
  double nframe_;
 
+ // pbc
+ bool pbc_;
  
  // calculate model GMM weights and covariances - these are constants
  void get_GMM_m(vector<AtomNumber> &atoms);
@@ -164,9 +166,13 @@ inv_sqrt2_(0.707106781186548),
 sqrt2_pi_(0.797884560802865),
 nl_cutoff_(-1.0), nl_stride_(0),
 first_time_(true), no_aver_(false), serial_(false),
-analysis_(false), nframe_(0.0)
+analysis_(false), nframe_(0.0), pbc_(true)
 {
-  
+ 
+  bool nopbc=!pbc_;
+  parseFlag("NOPBC",nopbc);
+  pbc_=!nopbc;
+ 
   vector<AtomNumber> atoms;
   parseAtomList("ATOMS",atoms);
   
@@ -541,23 +547,20 @@ void EM3D::get_cutoff_ov()
 double EM3D::get_overlap(const Vector &m_m, const Vector &d_m, double &fact_md,
                             const VectorGeneric<6> &inv_cov_md, Vector &ov_der)
 {
-  // calculate vector difference m_m-d_m
-  double md_x = m_m[0] - d_m[0];
-  double md_y = m_m[1] - d_m[1];
-  double md_z = m_m[2] - d_m[2];
+  Vector md;
+  // calculate vector difference m_m-d_m with/without pbc
+  if(pbc_) md = pbcDistance(d_m, m_m);
+  else     md = delta(d_m, m_m);
   // calculate product of transpose of md and inv_cov_md
-  double p_x = md_x*inv_cov_md[0]+md_y*inv_cov_md[1]+md_z*inv_cov_md[2];
-  double p_y = md_x*inv_cov_md[1]+md_y*inv_cov_md[3]+md_z*inv_cov_md[4];
-  double p_z = md_x*inv_cov_md[2]+md_y*inv_cov_md[4]+md_z*inv_cov_md[5];
+  double p_x = md[0]*inv_cov_md[0]+md[1]*inv_cov_md[1]+md[2]*inv_cov_md[2];
+  double p_y = md[0]*inv_cov_md[1]+md[1]*inv_cov_md[3]+md[2]*inv_cov_md[4];
+  double p_z = md[0]*inv_cov_md[2]+md[1]*inv_cov_md[4]+md[2]*inv_cov_md[5];
   // calculate product of prod and md
-  double ov = md_x*p_x+md_y*p_y+md_z*p_z; 
+  double ov = md[0]*p_x+md[1]*p_y+md[2]*p_z;
   // final calculation
   ov = fact_md * exp(-0.5*ov);
   // derivatives
-  double x = md_x*inv_cov_md[0] + md_y*inv_cov_md[1] + md_z*inv_cov_md[2];
-  double y = md_x*inv_cov_md[1] + md_y*inv_cov_md[3] + md_z*inv_cov_md[4];
-  double z = md_x*inv_cov_md[2] + md_y*inv_cov_md[4] + md_z*inv_cov_md[5];
-  ov_der = ov * Vector(x, y, z); 
+  ov_der = ov * Vector(p_x, p_y, p_z);
   return ov;
 }
 
@@ -566,16 +569,16 @@ double EM3D::get_overlap(const Vector &m_m, const Vector &d_m, double &fact_md,
                             const VectorGeneric<6> &inv_cov_md)
                         
 {
-  // calculate vector difference m_m-d_m
-  double md_x = m_m[0] - d_m[0];
-  double md_y = m_m[1] - d_m[1];
-  double md_z = m_m[2] - d_m[2];
+  Vector md;
+  // calculate vector difference m_m-d_m with/without pbc 
+  if(pbc_) md = pbcDistance(d_m, m_m);
+  else     md = delta(d_m, m_m);
   // calculate product of transpose of md and inv_cov_md
-  double p_x = md_x*inv_cov_md[0]+md_y*inv_cov_md[1]+md_z*inv_cov_md[2];
-  double p_y = md_x*inv_cov_md[1]+md_y*inv_cov_md[3]+md_z*inv_cov_md[4];
-  double p_z = md_x*inv_cov_md[2]+md_y*inv_cov_md[4]+md_z*inv_cov_md[5];
+  double p_x = md[0]*inv_cov_md[0]+md[1]*inv_cov_md[1]+md[2]*inv_cov_md[2];
+  double p_y = md[0]*inv_cov_md[1]+md[1]*inv_cov_md[3]+md[2]*inv_cov_md[4];
+  double p_z = md[0]*inv_cov_md[2]+md[1]*inv_cov_md[4]+md[2]*inv_cov_md[5];
   // calculate product of prod and md
-  double ov = md_x*p_x+md_y*p_y+md_z*p_z; 
+  double ov = md[0]*p_x+md[1]*p_y+md[2]*p_z;
   // final calculation
   if( ov > ov_cut_ ){ 
     ov = 0.0;
@@ -641,7 +644,6 @@ void EM3D::prepare()
 // overlap calculator
 void EM3D::calculate_overlap(){
 
-  //makeWhole();
   if(first_time_ || getExchangeStep() || getStep()%nl_stride_==0){
      update_neighbor_list();
      first_time_=false;
@@ -716,8 +718,12 @@ void EM3D::calculate(){
   ene_b /= escale;
    
   // clear temporary vector
-  for(unsigned i=0; i<atom_der_.size(); ++i)   atom_der_[i]   = Vector(0,0,0);
-  for(unsigned i=0; i<atom_der_b_.size(); ++i) atom_der_b_[i] = Vector(0,0,0);
+  for(unsigned i=0; i<atom_der_.size(); ++i){ 
+     atom_der_[i]   = Vector(0,0,0);
+     atom_der_b_[i] = Vector(0,0,0);
+  }
+  // virial
+  Tensor virial, virialb;
 
   // get derivatives of bias with respect to atoms
   for(unsigned i=rank_;i<nl_.size();i=i+size_) {
@@ -728,27 +734,46 @@ void EM3D::calculate(){
      double der = - kbt_/err_f_[id]*sqrt2_pi_*exp(-0.5*(ovmd_[id]-ovdd_[id])*(ovmd_[id]-ovdd_[id])/sigma_mean_[id]/sigma_mean_[id])/sigma_mean_[id];
      // second part
      der += kbt_ / (ovmd_[id]-ovdd_[id]);
-     // chain rule
-     if(GMM_d_beta_[id] == 1) atom_der_b_[im] += der * ovmd_der_[i];
-     else                     atom_der_[im]   += der * ovmd_der_[i];
+     // chain rule 
+     Vector tot_der = der * ovmd_der_[i];
+     // atom's position in GMM cell 
+     Vector pos;
+     if(pbc_) pos = pbcDistance(GMM_d_m_[id], getPosition(im)) + GMM_d_m_[id];
+     else     pos = getPosition(im);
+     // add derivative and virial 
+     if(GMM_d_beta_[id] == 1) {
+      atom_der_b_[im] += tot_der;
+      virialb         += Tensor(pos, -tot_der);
+     } else {
+      atom_der_[im] += tot_der;
+      virial        += Tensor(pos, -tot_der);
+     }
   }
-    
+
   // if parallel, communicate stuff
   if(!serial_){
     comm.Sum(&atom_der_[0][0],   3*atom_der_.size());
     comm.Sum(&atom_der_b_[0][0], 3*atom_der_b_.size());
+    comm.Sum(virial);
+    comm.Sum(virialb);
   }
   
-  // set derivatives
-  for(unsigned i=0;i<atom_der_.size();++i)   setAtomsDerivatives(getPntrToComponent("score"), i,  atom_der_[i]);
-  for(unsigned i=0;i<atom_der_b_.size();++i) setAtomsDerivatives(getPntrToComponent("scoreb"), i, atom_der_b_[i]);
+  // set derivatives 
+  for(unsigned i=0;i<atom_der_.size();++i) {
+     setAtomsDerivatives(getPntrToComponent("score"),  i, atom_der_[i]);
+     setAtomsDerivatives(getPntrToComponent("scoreb"), i, atom_der_b_[i]);
+  }
+
+  // and set virial
+  setBoxDerivatives(getPntrToComponent("score"),  virial);
+  setBoxDerivatives(getPntrToComponent("scoreb"), virialb);
 
   // set value of the score
   getPntrToComponent("score")->set(ene);
   // set value of the beta score
   getPntrToComponent("scoreb")->set(ene_b);
-  
-  } else {
+
+ } else {
   
    // ANALYSIS MODE   
    // prepare stuff for the first time
